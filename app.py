@@ -81,7 +81,7 @@ def load_ml_model():
     # Utilise le modèle pré-entraîné public de Microsoft
     tokenizer = LayoutLMv3Tokenizer.from_pretrained("microsoft/layoutlmv3-base")
     model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base")
-    model.eval()  # Passe le modèle en mode évaluation
+    model.eval()  # Mode évaluation
     return tokenizer, model
 
 tokenizer_ml, model_ml = load_ml_model()
@@ -119,7 +119,6 @@ if uploaded_file:
     # -----------------------------------------------------------
     with st.spinner("Extraction du texte via OCR..."):
         ocr_results = ocr_reader.readtext(uploaded_file.getvalue())
-    # Chaque résultat est de la forme [bounding_box, texte, confiance]
     candidate_fields = []
     for result in ocr_results:
         bbox, text, conf = result
@@ -131,18 +130,15 @@ if uploaded_file:
     predicted_fields = []
     for candidate in candidate_fields:
         txt = candidate["text"]
-        # Utiliser tokenizer_ml.tokenize() pour obtenir la liste des tokens
-        tokens = tokenizer_ml.tokenize(txt)
-        # La séquence finale inclut généralement 2 tokens spéciaux ([CLS] et [SEP])
-        seq_len = len(tokens) + 2
-        # Créer des dummy boxes pour chaque token de la séquence
-        dummy_boxes = [[0, 0, 1000, 1000] for _ in range(seq_len)]
+        # Ici, nous utilisons max_length = 128 ; nous créons 128 dummy boxes.
+        dummy_boxes = [[0, 0, 1000, 1000] for _ in range(128)]
+        # Encodage avec dummy_boxes
         inputs = tokenizer_ml([txt], boxes=[dummy_boxes], return_tensors="pt", truncation=True, padding="max_length", max_length=128)
         with torch.no_grad():
             outputs = model_ml(**inputs)
-        logits = outputs.logits  # forme : (1, seq_len, num_labels)
+        logits = outputs.logits  # (1, 128, num_labels)
         predicted_label_id = torch.argmax(logits, dim=-1)[0, 0].item()
-        # Simulation : si le texte contient "part" ou "serial", on le considère comme pertinent
+        # Simulation : si le texte contient "part" ou "serial", on considère ce champ pertinent.
         if "part" in txt.lower() or "serial" in txt.lower():
             predicted_fields.append(txt)
     
@@ -177,4 +173,5 @@ if uploaded_file:
                   (image_bytes, full_ocr_text, corrected_fields))
         conn.commit()
         st.success("Feedback enregistré !")
+
 

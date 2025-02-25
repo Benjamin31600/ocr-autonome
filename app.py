@@ -169,5 +169,12 @@ if uploaded_file:
     # Enregistrement du feedback utilisateur pour amélioration continue
     # -----------------------------------------------------------
     if st.button("Enregistrer le feedback"):
-     
+        image_bytes = uploaded_file.getvalue()
+        full_ocr_text = " ".join([r["text"] for r in candidate_fields])
+        corrected_fields = " | ".join(updated_fields) if predicted_fields else ""
+        c.execute("INSERT INTO feedback (image, ocr_text, corrected_fields) VALUES (?, ?, ?)",
+                  (image_bytes, full_ocr_text, corrected_fields))
+        conn.commit()
+        st.success("Feedback enregistré !")
+
 

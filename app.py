@@ -132,11 +132,12 @@ if uploaded_file:
     predicted_fields = []
     for candidate in candidate_fields:
         txt = candidate["text"]
-        # Obtenir la liste des tokens pour déterminer la longueur de la séquence
-        tokens = tokenizer_ml.tokenize(txt)
-        seq_len = len(tokens)
-        # Créer des boîtes fictives ("dummy boxes") pour chaque token
+        # Pour obtenir la longueur finale de la séquence, on encode d'abord sans fournir de boxes
+        temp_enc = tokenizer_ml([txt], return_tensors="pt", truncation=True, padding="max_length", max_length=128)
+        seq_len = temp_enc["input_ids"].shape[1]
+        # Créer des dummy boxes de la même longueur que la séquence obtenue
         dummy_boxes = [[0, 0, 1000, 1000] for _ in range(seq_len)]
+        # Maintenant, on encode avec les boxes
         inputs = tokenizer_ml([txt], boxes=[dummy_boxes], return_tensors="pt", truncation=True, padding="max_length", max_length=128)
         with torch.no_grad():
             outputs = model_ml(**inputs)
@@ -177,5 +178,4 @@ if uploaded_file:
                   (image_bytes, full_ocr_text, corrected_fields))
         conn.commit()
         st.success("Feedback enregistré !")
-
 

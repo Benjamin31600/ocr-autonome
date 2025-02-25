@@ -1,7 +1,6 @@
 streamlit
 easyocr
-pillow
-tensorflow
-pandas
-numpy
 python-barcode
+pillow
+transformers
+torch

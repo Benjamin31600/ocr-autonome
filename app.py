@@ -128,22 +128,21 @@ if uploaded_file:
     # -----------------------------------------------------------
     # Utilisation du modèle ML pour prédire si chaque champ est important
     # -----------------------------------------------------------
-    # Simulation : si le texte contient "part" ou "serial", on considère le champ comme pertinent.
     predicted_fields = []
     for candidate in candidate_fields:
         txt = candidate["text"]
-        # Pour obtenir la longueur finale de la séquence, on encode d'abord sans fournir de boxes
-        temp_enc = tokenizer_ml([txt], return_tensors="pt", truncation=True, padding="max_length", max_length=128)
-        seq_len = temp_enc["input_ids"].shape[1]
-        # Créer des dummy boxes de la même longueur que la séquence obtenue
+        # Utiliser tokenizer_ml.tokenize() pour obtenir la liste des tokens
+        tokens = tokenizer_ml.tokenize(txt)
+        # La séquence finale inclut généralement 2 tokens spéciaux ([CLS] et [SEP])
+        seq_len = len(tokens) + 2
+        # Créer des dummy boxes pour chaque token de la séquence
         dummy_boxes = [[0, 0, 1000, 1000] for _ in range(seq_len)]
-        # Maintenant, on encode avec les boxes
         inputs = tokenizer_ml([txt], boxes=[dummy_boxes], return_tensors="pt", truncation=True, padding="max_length", max_length=128)
         with torch.no_grad():
             outputs = model_ml(**inputs)
         logits = outputs.logits  # forme : (1, seq_len, num_labels)
         predicted_label_id = torch.argmax(logits, dim=-1)[0, 0].item()
-        # Simulation : si le texte contient "part" ou "serial", on l'ajoute
+        # Simulation : si le texte contient "part" ou "serial", on le considère comme pertinent
         if "part" in txt.lower() or "serial" in txt.lower():
             predicted_fields.append(txt)
     

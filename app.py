@@ -7,59 +7,24 @@ from PIL import Image
 import io
 import sqlite3
 
-# --- Injection de CSS ultra moderne avec hero section et style marketing ---
+# --- Injection de CSS ultra moderne pour une interface SaaS ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
     
-    /* Background plein écran avec image et overlay */
+    /* Arrière-plan et typographie */
     body {
-        background: url('https://source.unsplash.com/1600x900/?technology,office') no-repeat center center fixed;
-        background-size: cover;
+        background: linear-gradient(135deg, #e0eafc, #cfdef3);
         font-family: 'Roboto', sans-serif;
     }
-    /* Overlay sur le container principal */
     [data-testid="stAppViewContainer"] {
-        background: linear-gradient(135deg, rgba(224,234,252,0.9), rgba(207,222,243,0.9));
+        background: transparent;
     }
-    /* Hero section */
-    .hero {
-        text-align: center;
-        padding: 120px 20px 80px;
+    h1, h2, h3 {
         color: #003366;
-    }
-    .hero h1 {
-        font-size: 3.5rem;
-        margin-bottom: 20px;
         font-weight: 700;
     }
-    .hero p {
-        font-size: 1.5rem;
-        margin-bottom: 40px;
-    }
-    .cta-button {
-        background: linear-gradient(90deg, #003366, #002244);
-        border: none;
-        border-radius: 30px;
-        padding: 15px 40px;
-        font-size: 1.2rem;
-        color: #fff;
-        cursor: pointer;
-        transition: background 0.3s ease;
-    }
-    .cta-button:hover {
-        background: linear-gradient(90deg, #002244, #001122);
-    }
-    /* Style pour les cartes d'affichage */
-    .card {
-        background-color: #ffffff;
-        border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        padding: 20px;
-        margin: 20px auto;
-        max-width: 800px;
-    }
-    /* Style des boutons Streamlit natifs */
+    /* Boutons */
     .stButton button {
         background-color: #003366;
         color: #fff;
@@ -73,23 +38,27 @@ st.markdown("""
     .stButton button:hover {
         background-color: #002244;
     }
+    /* Zone de saisie */
+    .stTextInput input {
+        border-radius: 8px;
+        padding: 10px;
+        font-size: 16px;
+        border: 1px solid #ccc;
+    }
+    /* Style des images de codes-barres */
+    .barcode-img {
+        margin-top: 10px;
+        border: 1px solid #eee;
+        padding: 10px;
+        border-radius: 8px;
+        background: #fff;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- Hero Section Ultra Marketing ---
-st.markdown("""
-    <div class="hero">
-        <h1>Daher Aerospace</h1>
-        <p>Réception & Traitement Intelligent des Numéros<br>Extrait, identifie et génère automatiquement vos codes-barres.</p>
-        <button class="cta-button" onclick="window.scrollTo(0, document.body.scrollHeight)">Commencer</button>
-    </div>
-    """, unsafe_allow_html=True)
-
-# --- Zone de contenu principale dans une "carte" moderne ---
-st.markdown('<div class="card">', unsafe_allow_html=True)
-
-st.subheader("Téléversez votre bordereau de réception")
-st.write("Prenez en photo ou téléchargez une image de votre bordereau. L'application extrait le texte et identifie les numéros de série et de pièces (avec ou sans espaces, quelle que soit leur position, en français ou en anglais).")
+# --- Titre et description ---
+st.title("Daher Aerospace – Réception & Traitement des Numéros")
+st.write("Prenez en photo le bordereau de réception. L'application extrait et affiche uniquement les numéros de série ou de pièces détectés, avec leur code-barres associé. Vous pouvez modifier chaque numéro si nécessaire.")
 
 # --- Connexion à la base de données SQLite pour le feedback ---
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
@@ -104,7 +73,7 @@ c.execute('''
 ''')
 conn.commit()
 
-# --- Optimisations : Mise en cache du modèle OCR et génération de codes-barres ---
+# --- Mise en cache du modèle OCR et fonctions d'optimisation ---
 @st.cache(allow_output_mutation=True)
 def load_ocr_model():
     return easyocr.Reader(['fr', 'en'])
@@ -127,20 +96,19 @@ def generate_barcode(sn):
 uploaded_file = st.file_uploader("Téléchargez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
 
 if uploaded_file:
-    # Redimensionnement de l'image pour accélérer l'OCR
+    # Redimensionner l'image pour accélérer l'OCR (optionnel)
     image = Image.open(uploaded_file)
     image.thumbnail((1024, 1024))
     st.image(image, caption="Bordereau de réception", use_column_width=True)
     
     with st.spinner("Extraction du texte..."):
         results = perform_ocr(uploaded_file.getvalue())
-    detected_text = " ".join([text for (_, text, _) in results])
+    # Concaténer uniquement le texte OCR pour l'extraction
+    ocr_text = " ".join([text for (_, text, _) in results])
     
-    st.markdown("<hr>", unsafe_allow_html=True)
-    st.subheader("Texte détecté")
-    st.write(detected_text)
-    
-    # --- Extraction ciblée des numéros (séries & pièces) ---
+    # --- Extraction ciblée des numéros ---
+    # Cette regex couvre différentes variantes (français et anglais) telles que :
+    # "numéro de série", "n° de série", "serial number", "part number", "pièce serialisée", etc.
     pattern = re.compile(
         r'(?:(?:num(?:éro)?s?\s*de\s*(?:s[ée]rie(?:s)?|series))'
         r'|(?:n°\s*de\s*(?:s[ée]rie(?:s)?|series))'
@@ -151,41 +119,36 @@ if uploaded_file:
         r'((?:[A-Za-z0-9]+\s?)+)',
         re.IGNORECASE
     )
-    
-    matches = pattern.findall(detected_text)
+    matches = pattern.findall(ocr_text)
     
     if matches:
-        st.subheader("Numéros extraits et Codes-barres")
-        serial_numbers = [match.strip() for match in matches]  # Conserve les espaces internes
-        serial_numbers = list(dict.fromkeys(serial_numbers))  # Élimine les doublons
+        st.subheader("Numéros détectés et Codes-barres associés")
+        # Conserver les numéros avec leurs espaces internes (sans suppression totale)
+        serial_numbers = [match.strip() for match in matches]
+        serial_numbers = list(dict.fromkeys(serial_numbers))  # Éliminer les doublons
         
-        for sn in serial_numbers:
-            col1, col2 = st.columns([1, 2])
+        updated_numbers = []
+        # Pour chaque numéro, afficher un champ modifiable et le code-barres associé
+        for i, sn in enumerate(serial_numbers):
+            col1, col2 = st.columns([1, 1])
             with col1:
-                st.markdown(f"**{sn}**")
+                num_input = st.text_input(f"Numéro {i+1}", value=sn, key=f"num_{i}")
+                updated_numbers.append(num_input)
             with col2:
                 try:
-                    buffer = generate_barcode(sn)
-                    st.image(buffer, caption=f"Code-barres pour {sn}", use_column_width=True)
+                    buffer = generate_barcode(num_input)
+                    st.image(buffer, caption=f"Code-barres pour {num_input}", use_column_width=True)
                 except Exception as e:
-                    st.error(f"Erreur lors de la génération du code-barres pour {sn} : {str(e)}")
+                    st.error(f"Erreur pour {num_input} : {str(e)}")
     else:
-        st.warning("Aucun numéro détecté. Vérifiez que le bordereau contient des libellés tels que 'numéro de série', 'n° de série', 'serial number', 'part number', ou 'pièce serialisée'.")
+        st.warning("Aucun numéro n'a été détecté. Vérifiez que le bordereau contient des libellés tels que 'numéro de série', 'n° de série', 'serial number', 'part number', ou 'pièce serialisée'.")
     
-    st.markdown("<hr>", unsafe_allow_html=True)
-    
-    # --- Zone de feedback pour l'auto-amélioration ---
-    st.subheader("Ajustez le texte extrait si nécessaire")
-    final_text = st.text_area("Modifiez le texte ci-dessous", value=detected_text)
-    
-    if st.button("Envoyer le feedback"):
+    # --- Zone de feedback pour l'auto-amélioration (en option) ---
+    if st.button("Enregistrer le feedback"):
         image_bytes = uploaded_file.getvalue()
+        # On enregistre uniquement le texte OCR complet pour référence, ainsi que les numéros modifiés (joint en une chaîne)
+        corrected_text = " | ".join(updated_numbers)
         c.execute("INSERT INTO feedback (image, ocr_text, corrected_text) VALUES (?, ?, ?)",
-                  (image_bytes, detected_text, final_text))
+                  (image_bytes, ocr_text, corrected_text))
         conn.commit()
-        st.success("Merci ! Votre feedback contribuera à l'amélioration continue du système.")
-
-st.markdown("</div>", unsafe_allow_html=True)
-
-     
-    
+        st.success("Feedback enregistré !")

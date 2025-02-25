@@ -132,7 +132,8 @@ if uploaded_file:
     predicted_fields = []
     for candidate in candidate_fields:
         txt = candidate["text"]
-        inputs = tokenizer_ml(txt, return_tensors="pt", truncation=True, padding="max_length", max_length=128)
+        # IMPORTANT : passer le texte dans une liste
+        inputs = tokenizer_ml([txt], return_tensors="pt", truncation=True, padding="max_length", max_length=128)
         seq_len = inputs["input_ids"].shape[1]
         # Fournir des boîtes fictives pour l'inférence (dummy boxes)
         dummy_boxes = torch.tensor([[[0, 0, 1000, 1000]] * seq_len])

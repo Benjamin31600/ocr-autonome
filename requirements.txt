@@ -4,3 +4,4 @@ pillow
 tensorflow
 pandas
 numpy
+python-barcode

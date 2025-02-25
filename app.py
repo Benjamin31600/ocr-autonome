@@ -1,24 +1,43 @@
 import streamlit as st
 import easyocr
+import re
+import barcode
+from barcode.writer import ImageWriter
 from PIL import Image
+import io
 import sqlite3
-import pickle
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.sequence import pad_sequences
 
-# --- Chargement du modèle de correction et des tokenizers ---
-try:
-    correction_model = load_model("correction_model.h5")
-    with open("tokenizer_in.pkl", "rb") as f:
-        tokenizer_in = pickle.load(f)
-    with open("tokenizer_out.pkl", "rb") as f:
-        tokenizer_out = pickle.load(f)
-    model_loaded = True
-except Exception as e:
-    st.warning("Modèle de correction non disponible. Utilisation du texte OCR brut.")
-    model_loaded = False
+# --- Injection de CSS personnalisé pour une interface moderne aux couleurs Daher Aerospace ---
+st.markdown("""
+    <style>
+    /* Fond et style global */
+    body {
+        background-color: #f4f4f4;
+        font-family: 'Arial', sans-serif;
+    }
+    .stApp {
+        background-color: #f4f4f4;
+    }
+    /* Titres et textes */
+    h1, h2, h3 {
+        color: #003366;
+    }
+    /* Boutons personnalisés */
+    .stButton button {
+        background-color: #003366;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        padding: 10px 20px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- Initialisation de la base de données SQLite ---
+# --- Titre et description ---
+st.title("Daher Aerospace – Reception & Serial Number Processing")
+st.write("Capture the reception document. The system extracts text, identifies serial numbers, and generates their barcodes. It continuously learns from user feedback.")
+
+# --- Connexion à la base de données SQLite pour stocker le feedback ---
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
 c.execute('''
@@ -31,59 +50,69 @@ c.execute('''
 ''')
 conn.commit()
 
-st.title("Application OCR avec apprentissage autonome")
-st.write("Téléchargez une image. Le système extrait le texte, propose une correction automatique et vous permet d’ajuster le résultat.")
+# --- Téléversement de l'image ---
+uploaded_file = st.file_uploader("Upload an image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
 
-uploaded_file = st.file_uploader("Choisissez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
-
-if uploaded_file is not None:
+if uploaded_file:
+    # Afficher l'image uploadée
     image = Image.open(uploaded_file)
-    st.image(image, caption="Image téléchargée", use_column_width=True)
+    st.image(image, caption="Reception document", use_column_width=True)
     
-    st.write("Traitement de l'image en cours...")
-    
-    reader = easyocr.Reader(['fr'])
+    st.write("**Extracting text...**")
+    reader = easyocr.Reader(['fr', 'en'])  # Inclut français et anglais
     results = reader.readtext(uploaded_file.getvalue())
     detected_text = " ".join([text for (_, text, _) in results])
     
-    st.write("Texte détecté (OCR) :")
+    st.write("**Detected text:**")
     st.write(detected_text)
     
-    corrected_generated = ""
-    if model_loaded:
-        # Convertir le texte OCR en séquence
-        seq = tokenizer_in.texts_to_sequences([detected_text])
-        seq = pad_sequences(seq, maxlen=50, padding='post')  # maxlen fixé pour cet exemple
-        
-        # On initialise le décodeur avec le token de début (ici '\t' est utilisé)
-        start_token_index = tokenizer_out.word_index.get('\t', 1)
-        decoder_input = [[start_token_index]]
-        
-        # On définit le token de fin (ici '\n')
-        stop_token_index = tokenizer_out.word_index.get('\n', 0)
-        max_decoder_seq_length = 50
-        
-        for i in range(max_decoder_seq_length):
-            decoder_seq = pad_sequences(decoder_input, maxlen=max_decoder_seq_length, padding='post')
-            output_tokens = correction_model.predict([seq, decoder_seq])
-            sampled_token_index = output_tokens[0, i, :].argmax()
-            if sampled_token_index == stop_token_index:
-                break
-            # Trouver le mot correspondant à l'index
-            sampled_word = [word for word, index in tokenizer_out.word_index.items() if index == sampled_token_index]
-            sampled_word = sampled_word[0] if sampled_word else ""
-            corrected_generated += " " + sampled_word
-            decoder_input[0].append(sampled_token_index)
+    # --- Extraction des numéros de série avec de nombreuses variantes ---
+    # La regex ci-dessous tente de couvrir un maximum de cas, en français et en anglais.
+    pattern = re.compile(
+        r'(?:(?:num(?:éro)?s?\s*(?:de\s*)?(?:s[ée]rie(?:s)?|series))'    # ex: "numéro(s) de série(s)" ou "series"
+        r'|(?:n°\s*(?:de\s*)?(?:s[ée]rie(?:s)?|series))'                  # ex: "n° de série(s)"
+        r'|(?:serial\s*(?:number|no\.?))'                                  # ex: "serial number", "serial no"
+        r'|(?:serie\s*number))'                                           # ex: "serie number"
+        r'\s*[:\-]?\s*'
+        r'((?:[A-Za-z0-9]+\s?)+)',                                        # Capture le ou les numéros (avec ou sans espace)
+        re.IGNORECASE
+    )
     
-    st.write("Texte après correction automatique :")
-    st.write(corrected_generated.strip() if model_loaded else detected_text)
+    matches = pattern.findall(detected_text)
     
-    # Zone pour ajuster le texte final
-    final_text = st.text_area("Modifiez le texte si nécessaire", value=(corrected_generated.strip() if model_loaded else detected_text))
+    if matches:
+        st.write("**Extracted Serial Numbers:**")
+        serial_numbers = []
+        for match in matches:
+            # Nettoyer la chaîne extraite (supprimer les espaces superflus)
+            sn = match.strip()
+            sn = re.sub(r'\s+', '', sn)
+            serial_numbers.append(sn)
+        
+        # Éliminer les doublons
+        serial_numbers = list(dict.fromkeys(serial_numbers))
+        
+        # Afficher les numéros et générer les codes-barres
+        for sn in serial_numbers:
+            st.markdown(f"**{sn}**")
+            try:
+                CODE128 = barcode.get_barcode_class('code128')
+                barcode_img = CODE128(sn, writer=ImageWriter())
+                buffer = io.BytesIO()
+                barcode_img.write(buffer)
+                buffer.seek(0)
+                st.image(buffer, caption=f"Barcode for {sn}", use_column_width=False)
+            except Exception as e:
+                st.error(f"Error generating barcode for {sn}: {str(e)}")
+    else:
+        st.write("No serial numbers detected. Please check the document format and ensure it includes labels such as 'numéro de série', 'n° de série', 'serial number', etc.")
     
-    if st.button("Envoyer les corrections"):
+    # --- Zone pour permettre à l'opérateur d'ajuster le texte final (feedback) ---
+    final_text = st.text_area("Adjust the extracted text if necessary", value=detected_text)
+    
+    if st.button("Submit feedback"):
         image_bytes = uploaded_file.getvalue()
         c.execute("INSERT INTO feedback (image, ocr_text, corrected_text) VALUES (?, ?, ?)",
                   (image_bytes, detected_text, final_text))
         conn.commit()
-        st.success("Merci pour votre retour !")
+        st.success("Thank you! Your feedback will be used to further improve the system over time.")

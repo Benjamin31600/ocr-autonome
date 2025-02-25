@@ -49,7 +49,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – Extraction Automatique des Champs")
-st.write("Prenez en photo un bordereau de réception. Le système tente d'extraire automatiquement les champs importants (par exemple, Part Number, Serial Number) et génère leur code‑barres associé. Vous pouvez modifier chaque champ si nécessaire.")
+st.write("Prenez en photo un bordereau de réception. Le système utilise un modèle intelligent pour extraire les champs importants (ex. Part Number, Serial Number) et génère leur code‑barres associé. Vous pouvez modifier chaque champ si nécessaire.")
 
 # -----------------------------------------------------------
 # Base de données SQLite pour enregistrer le feedback utilisateur
@@ -67,11 +67,11 @@ c.execute('''
 conn.commit()
 
 # -----------------------------------------------------------
-# Chargement des modèles avec mise en cache
+# Chargement des modèles avec mise en cache (Streamlit)
 # -----------------------------------------------------------
 @st.cache_resource
 def load_ml_model():
-    # On utilise le modèle pré-entraîné public de Microsoft
+    # Utilise le modèle pré-entraîné public de Microsoft
     tokenizer = LayoutLMv3Tokenizer.from_pretrained("microsoft/layoutlmv3-base")
     model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base")
     model.eval()  # Mode évaluation
@@ -101,6 +101,7 @@ def generate_barcode(sn):
 # Téléversement de l'image du bordereau
 # -----------------------------------------------------------
 uploaded_file = st.file_uploader("Téléchargez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
+
 if uploaded_file:
     image = Image.open(uploaded_file)
     image.thumbnail((1024, 1024))
@@ -122,11 +123,13 @@ if uploaded_file:
     predicted_fields = []
     for candidate in candidate_fields:
         txt = candidate["text"]
-        # On ignore les textes vides
         if not txt.strip():
             continue
-        # Nous utilisons un max_length fixe de 128
-        dummy_boxes = [[0, 0, 1000, 1000] for _ in range(128)]
+        # Encodage temporaire pour obtenir la longueur de la séquence (après padding)
+        temp_enc = tokenizer_ml([txt], return_tensors="pt", truncation=True, padding="max_length", max_length=128)
+        seq_len = temp_enc["input_ids"].shape[1]
+        # Créer des dummy boxes pour chaque token de la séquence
+        dummy_boxes = [[0, 0, 1000, 1000] for _ in range(seq_len)]
         try:
             inputs = tokenizer_ml([txt], boxes=[dummy_boxes], return_tensors="pt", 
                                     truncation=True, padding="max_length", max_length=128)
@@ -135,9 +138,9 @@ if uploaded_file:
             continue
         with torch.no_grad():
             outputs = model_ml(**inputs)
-        logits = outputs.logits  # forme : (1, 128, num_labels)
+        logits = outputs.logits  # forme : (1, seq_len, num_labels)
         predicted_label_id = torch.argmax(logits, dim=-1)[0, 0].item()
-        # Ici, nous simulons une détection "intelligente" : si le texte contient "part" ou "serial", il est retenu.
+        # Simulation : si le texte contient "part" ou "serial", on le considère pertinent.
         if "part" in txt.lower() or "serial" in txt.lower():
             predicted_fields.append(txt)
     
@@ -172,6 +175,7 @@ if uploaded_file:
                   (image_bytes, full_ocr_text, corrected_fields))
         conn.commit()
         st.success("Feedback enregistré !")
+
 
 
 

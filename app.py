@@ -128,14 +128,16 @@ if uploaded_file:
     # -----------------------------------------------------------
     # Utilisation du modèle ML pour prédire si chaque champ est important
     # -----------------------------------------------------------
-    # Simulation : si le texte contient "part" ou "serial", on le considère comme pertinent.
+    # Simulation : si le texte contient "part" ou "serial", on considère le champ comme pertinent.
     predicted_fields = []
     for candidate in candidate_fields:
         txt = candidate["text"]
-        # Pour LayoutLMv3, on doit fournir des bounding boxes. 
-        # On tokenize le texte et on crée des boîtes fictives pour chaque token.
-        tokens = tokenizer_ml.tokenize(txt)
-        dummy_boxes = [[0, 0, 1000, 1000] for _ in range(len(tokens))]
+        # Pour déterminer la longueur finale (après padding), on encode d'abord sans boxes.
+        temp_enc = tokenizer_ml([txt], return_tensors="pt", truncation=True, padding="max_length", max_length=128)
+        seq_len = temp_enc["input_ids"].shape[1]
+        # Créer des boîtes fictives pour tous les tokens (la longueur doit correspondre à seq_len)
+        dummy_boxes = [[0, 0, 1000, 1000] for _ in range(seq_len)]
+        # Encodage avec les boxes
         inputs = tokenizer_ml([txt], boxes=[dummy_boxes], return_tensors="pt", truncation=True, padding="max_length", max_length=128)
         with torch.no_grad():
             outputs = model_ml(**inputs)

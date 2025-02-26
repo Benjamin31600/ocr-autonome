@@ -47,10 +47,10 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – Extraction et Validation des Champs")
-st.write("Téléchargez une image de bordereau. Le système extrait les champs candidats et tente d'isoler les numéros (ex. Part Number, Serial Number). Vous pouvez modifier chaque champ, puis indiquer via un bouton radio si le champ est valide ou rejeté. Seuls les champs validés seront utilisés pour l'apprentissage.")
+st.write("Téléchargez une image de bordereau. Le système extrait les fragments de texte via OCR, identifie les libellés (ex. 'Part Number', 'Serial Number') et recherche la valeur associée située en dessous ou à côté. Vous pouvez ensuite valider ou rejeter chaque extraction.")
 
 # -----------------------------------------------------------
-# Base de données SQLite pour le feedback utilisateur
+# Base de données SQLite pour enregistrer le feedback utilisateur
 # -----------------------------------------------------------
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
@@ -66,7 +66,7 @@ c.execute("""
 conn.commit()
 
 # -----------------------------------------------------------
-# Chargement du modèle OCR EasyOCR
+# Chargement d'EasyOCR
 # -----------------------------------------------------------
 @st.cache_resource
 def load_ocr_model():
@@ -86,6 +86,20 @@ def generate_barcode(sn):
     return buffer
 
 # -----------------------------------------------------------
+# Fonction pour calculer les métriques d'une bounding box
+# -----------------------------------------------------------
+def get_bbox_metrics(bbox):
+    # bbox est une liste de 4 points [[x0,y0], [x1,y1], [x2,y2], [x3,y3]]
+    xs = [pt[0] for pt in bbox]
+    ys = [pt[1] for pt in bbox]
+    top = min(ys)
+    bottom = max(ys)
+    left = min(xs)
+    right = max(xs)
+    center_x = (left + right) / 2
+    return top, bottom, left, right, center_x
+
+# -----------------------------------------------------------
 # Téléversement de l'image du bordereau
 # -----------------------------------------------------------
 uploaded_file = st.file_uploader("Téléchargez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
@@ -95,7 +109,7 @@ if uploaded_file:
     st.image(image, caption="Bordereau de réception", use_container_width=True)
     
     # -----------------------------------------------------------
-    # Extraction OCR avec EasyOCR
+    # Extraction OCR
     # -----------------------------------------------------------
     with st.spinner("Extraction du texte via OCR..."):
         ocr_results = ocr_reader.readtext(uploaded_file.getvalue())
@@ -104,30 +118,59 @@ if uploaded_file:
         bbox, text, conf = result
         candidate_fields.append({"bbox": bbox, "text": text})
     
-    # -----------------------------------------------------------
-    # Filtrage heuristique des fragments (basé sur des mots clés)
-    # -----------------------------------------------------------
-    accepted_pattern = re.compile(r"(part\s*number|serial\s*(number|no)|n°\s*de\s*série|serie)", re.IGNORECASE)
-    rejected_pattern = re.compile(r"(delivery|fax|tel|contact|date|order|quantity|adress|carrier|shipping|customer)", re.IGNORECASE)
-    candidate_fields_filtered = []
+    # Calculer les métriques de chaque bounding box
     for cand in candidate_fields:
-        txt = cand["text"]
-        if txt.strip() and accepted_pattern.search(txt) and not rejected_pattern.search(txt):
-            # Pour extraire la valeur associée, on tente de découper après un deux-points, sinon on garde le texte
-            parts = re.split("[:\-]", txt)
-            if len(parts) > 1:
-                candidate_fields_filtered.append(parts[1].strip())
-            else:
-                candidate_fields_filtered.append(txt.strip())
+        top, bottom, left, right, center_x = get_bbox_metrics(cand["bbox"])
+        cand["top"] = top
+        cand["bottom"] = bottom
+        cand["left"] = left
+        cand["right"] = right
+        cand["center_x"] = center_x
+
+    # -----------------------------------------------------------
+    # Extraire les paires "libellé" / "valeur"
+    # -----------------------------------------------------------
+    header_pattern = re.compile(r"(part\s*number|serial\s*(number|no)|n°\s*de\s*série|serie)", re.IGNORECASE)
+    extracted_fields = []
+    # Pour chaque fragment qui correspond à un header, chercher la valeur associée
+    for i, cand in enumerate(candidate_fields):
+        if header_pattern.search(cand["text"]):
+            header = cand
+            header_bottom = header["bottom"]
+            header_center = header["center_x"]
+            # Chercher le fragment avec le top le plus proche du header et aligné horizontalement
+            candidate_value = None
+            min_distance = float("inf")
+            for j, other in enumerate(candidate_fields):
+                if j == i:
+                    continue
+                # On cherche uniquement les fragments situés en dessous du header
+                if other["top"] >= header_bottom:
+                    # Vérifier l'alignement horizontal (marge de 100 pixels)
+                    if abs(other["center_x"] - header_center) < 100:
+                        distance = other["top"] - header_bottom
+                        if distance < min_distance:
+                            min_distance = distance
+                            candidate_value = other["text"].strip()
+            if candidate_value:
+                extracted_fields.append(candidate_value)
     
     # -----------------------------------------------------------
-    # Validation par l'utilisateur : Affichage des champs candidats
+    # Si aucun header n'est trouvé, on utilise une alternative : extraire tous les fragments contenant des chiffres
     # -----------------------------------------------------------
-    if candidate_fields_filtered:
-        st.subheader("Champs candidats détectés")
+    if not extracted_fields:
+        for cand in candidate_fields:
+            if re.search(r"\d", cand["text"]):
+                extracted_fields.append(cand["text"].strip())
+    
+    # -----------------------------------------------------------
+    # Validation par l'utilisateur
+    # -----------------------------------------------------------
+    if extracted_fields:
+        st.subheader("Champs extraits et Codes‑barres associés")
         validated_fields = []
         rejected_fields = []
-        for idx, field in enumerate(candidate_fields_filtered):
+        for idx, field in enumerate(extracted_fields):
             col1, col2, col3 = st.columns([3, 2, 2])
             with col1:
                 user_field = st.text_input(f"Champ {idx+1}", value=field, key=f"field_{idx}")
@@ -138,7 +181,6 @@ if uploaded_file:
                 except Exception as e:
                     st.error(f"Erreur pour {user_field} : {str(e)}")
             with col3:
-                # Utiliser un bouton radio pour la validation
                 status = st.radio("Statut", options=["Valider", "Rejeter", "Neutre"], key=f"status_{idx}")
             if status == "Valider":
                 validated_fields.append(user_field)
@@ -151,6 +193,7 @@ if uploaded_file:
         if st.button("Enregistrer le feedback"):
             image_bytes = uploaded_file.getvalue()
             full_ocr_text = " ".join([r["text"] for r in candidate_fields])
+            # On enregistre les champs validés et rejetés
             c.execute("INSERT INTO feedback (image, ocr_text, validated_fields) VALUES (?, ?, ?)",
                       (image_bytes, full_ocr_text, " | ".join(validated_fields)))
             c.execute("INSERT INTO feedback (image, ocr_text, validated_fields) VALUES (?, ?, ?)",
@@ -158,6 +201,6 @@ if uploaded_file:
             conn.commit()
             st.success("Feedback enregistré !")
     else:
-        st.warning("Aucun champ pertinent n'a été détecté par l'OCR.")
+        st.warning("Aucun champ pertinent n'a été extrait.")
 
 

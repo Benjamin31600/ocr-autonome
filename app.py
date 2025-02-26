@@ -10,7 +10,7 @@ import torch
 from transformers import LayoutLMv3Tokenizer, LayoutLMv3ForTokenClassification
 
 # -----------------------------------------------------------
-# CSS & Style : Interface ultra moderne et marketing
+# CSS & Style : Interface moderne et marketing
 # -----------------------------------------------------------
 st.markdown("""
     <style>
@@ -48,8 +48,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – Extraction Automatique des Champs")
-st.write("Téléchargez une image de bordereau. Le système utilise l'OCR pour extraire les champs importants (ex. Part Number, Serial Number) et génère leur code‑barres associé. Vous pouvez modifier chaque valeur si nécessaire.")
+st.title("Daher Aerospace – Extraction Intelligente des Champs")
+st.write("Téléchargez une image de bordereau. Le système utilise l'OCR pour extraire le texte, filtre les fragments susceptibles d'être des numéros de série ou de pièces, et génère leur code‑barres associé. Vous pouvez corriger chaque champ si nécessaire.")
 
 # -----------------------------------------------------------
 # Base de données SQLite pour le feedback utilisateur
@@ -67,22 +67,21 @@ c.execute("""
 conn.commit()
 
 # -----------------------------------------------------------
-# Chargement des modèles avec mise en cache
+# Chargement des modèles (avec cache)
 # -----------------------------------------------------------
-@st.cache_resource
-def load_ml_model():
-    # Utilise le modèle pré-entraîné public de Microsoft
-    tokenizer = LayoutLMv3Tokenizer.from_pretrained("microsoft/layoutlmv3-base")
-    model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base")
-    model.eval()  # Mode évaluation
-    return tokenizer, model
-
-tokenizer_ml, model_ml = load_ml_model()
-
 @st.cache_resource
 def load_ocr_model():
     return easyocr.Reader(['fr', 'en'])
 ocr_reader = load_ocr_model()
+
+@st.cache_resource
+def load_ml_model():
+    # On utilise le modèle public de Microsoft (LayoutLMv3)
+    tokenizer = LayoutLMv3Tokenizer.from_pretrained("microsoft/layoutlmv3-base")
+    model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base")
+    model.eval()
+    return tokenizer, model
+tokenizer_ml, model_ml = load_ml_model()
 
 # -----------------------------------------------------------
 # Fonction pour générer un code‑barres pour un champ donné
@@ -97,7 +96,7 @@ def generate_barcode(sn):
     return buffer
 
 # -----------------------------------------------------------
-# Téléversement de l'image du bordereau
+# Téléversement de l'image
 # -----------------------------------------------------------
 uploaded_file = st.file_uploader("Téléchargez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
 if uploaded_file:
@@ -106,7 +105,7 @@ if uploaded_file:
     st.image(image, caption="Bordereau de réception", use_container_width=True)
     
     # -----------------------------------------------------------
-    # Extraction OCR avec EasyOCR
+    # Extraction OCR
     # -----------------------------------------------------------
     with st.spinner("Extraction du texte via OCR..."):
         ocr_results = ocr_reader.readtext(uploaded_file.getvalue())
@@ -116,40 +115,47 @@ if uploaded_file:
         candidate_fields.append({"bbox": bbox, "text": text})
     
     # -----------------------------------------------------------
-    # Utilisation d'une approche ML pour identifier les champs pertinents
+    # Filtrage des fragments pour ne garder que ceux susceptibles d'être des champs pertinents
     # -----------------------------------------------------------
     predicted_fields = []
-    max_length = 128  # On fixe la longueur à 128 tokens
-    # Créer des dummy boxes fixes, en s'assurant que chaque valeur est un int
-    fixed_dummy_boxes = [[int(0), int(0), int(1000), int(1000)] for _ in range(max_length)]
-    
+    # On définit des mots clés acceptés et des mots clés à exclure.
+    accepted_pattern = re.compile(r"(part|serial|serie)", re.IGNORECASE)
+    rejected_pattern = re.compile(r"(delivery|fax|tel|contact|date|order|quantity|adress|carrier|shipping|customer)", re.IGNORECASE)
     for candidate in candidate_fields:
         txt = candidate["text"]
-        # Ignore les textes très courts
-        if len(txt.strip()) < 3:
+        if not txt.strip():
             continue
-        try:
-            # On encode le texte avec un nombre fixe de dummy boxes
-            inputs = tokenizer_ml([txt], boxes=[fixed_dummy_boxes], return_tensors="pt", 
-                                    truncation=True, padding="max_length", max_length=max_length)
-        except Exception as e:
-            st.error(f"Erreur lors de l'encodage pour le texte '{txt}': {str(e)}")
-            continue
-        with torch.no_grad():
-            outputs = model_ml(**inputs)
-        logits = outputs.logits  # forme : (1, max_length, num_labels)
-        predicted_label_id = torch.argmax(logits, dim=-1)[0, 0].item()
-        # Simulation simple : si le texte contient "part" ou "serial", on le considère pertinent
-        if re.search(r"(part|serial)", txt, re.IGNORECASE):
+        # Si le texte contient l'un des mots clés acceptés et ne contient pas de mots rejetés, on le garde
+        if accepted_pattern.search(txt) and not rejected_pattern.search(txt):
             predicted_fields.append(txt)
     
     # -----------------------------------------------------------
-    # Affichage des champs détectés et génération des codes‑barres associés
+    # Tentative d'encodage des fragments filtrés avec dummy boxes fixes
     # -----------------------------------------------------------
-    if predicted_fields:
+    final_fields = []
+    max_length = 128
+    fixed_dummy_boxes = [[0, 0, 1000, 1000] for _ in range(max_length)]
+    for txt in predicted_fields:
+        try:
+            inputs = tokenizer_ml([txt], boxes=[fixed_dummy_boxes], return_tensors="pt",
+                                    truncation=True, padding="max_length", max_length=max_length)
+            with torch.no_grad():
+                outputs = model_ml(**inputs)
+            logits = outputs.logits
+            predicted_label_id = torch.argmax(logits, dim=-1)[0, 0].item()
+            # Nous considérons que ce fragment est pertinent si le texte contient "part" ou "serial".
+            final_fields.append(txt)
+        except Exception as e:
+            st.error(f"Erreur lors de l'encodage pour le texte '{txt}': {str(e)}")
+            continue
+    
+    # -----------------------------------------------------------
+    # Affichage des champs et génération des codes‑barres
+    # -----------------------------------------------------------
+    if final_fields:
         st.subheader("Champs détectés et Codes‑barres associés")
         updated_fields = []
-        for idx, field in enumerate(predicted_fields):
+        for idx, field in enumerate(final_fields):
             col1, col2 = st.columns(2)
             with col1:
                 user_field = st.text_input(f"Champ {idx+1}", value=field, key=f"field_{idx}")
@@ -161,17 +167,18 @@ if uploaded_file:
                 except Exception as e:
                     st.error(f"Erreur pour {user_field} : {str(e)}")
     else:
-        st.warning("Aucun champ pertinent n'a été détecté par le modèle ML.")
+        st.warning("Aucun champ pertinent n'a été détecté par le modèle ML après filtrage.")
     
     # -----------------------------------------------------------
-    # Enregistrement du feedback utilisateur pour amélioration continue
+    # Enregistrement du feedback
     # -----------------------------------------------------------
     if st.button("Enregistrer le feedback"):
         image_bytes = uploaded_file.getvalue()
         full_ocr_text = " ".join([r["text"] for r in candidate_fields])
-        corrected_fields = " | ".join(updated_fields) if predicted_fields else ""
+        corrected_fields = " | ".join(updated_fields) if final_fields else ""
         c.execute("INSERT INTO feedback (image, ocr_text, corrected_fields) VALUES (?, ?, ?)",
                   (image_bytes, full_ocr_text, corrected_fields))
         conn.commit()
         st.success("Feedback enregistré !")
+
 

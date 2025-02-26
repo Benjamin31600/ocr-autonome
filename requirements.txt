@@ -2,3 +2,5 @@ streamlit
 easyocr
 python-barcode
 pillow
+transformers
+torch

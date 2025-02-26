@@ -10,66 +10,70 @@ import threading
 import time
 
 # -----------------------------------------------------------
-# CSS & Style : Inspiration Aéronautique et Moderne
+# CSS & Style : Apparence moderne inspirée de Daher Aerospace & Fiverr
 # -----------------------------------------------------------
 st.markdown("""
     <style>
-    /* Couleurs inspirées de l'aéronautique : bleus profonds, gris et blanc */
+    /* Utilisation de Montserrat pour une typographie moderne */
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600&display=swap');
     body {
-        background: linear-gradient(135deg, #0a2342, #102a3d);
-        font-family: 'Roboto', sans-serif;
+        background: linear-gradient(135deg, #0d1b2a, #1b263b);
+        font-family: 'Montserrat', sans-serif;
         color: #ffffff;
-        margin: 0;
-        padding: 0;
     }
+    /* Conteneur principal */
     [data-testid="stAppViewContainer"] {
         background: #ffffff;
         border-radius: 15px;
-        padding: 30px;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.2);
-        margin: 20px;
+        padding: 2rem;
+        box-shadow: 0 12px 24px rgba(0,0,0,0.2);
+        margin: 2rem auto;
+        max-width: 1200px;
     }
     h1, h2, h3 {
-        color: #0a2342;
+        color: #0d1b2a;
     }
+    /* Boutons */
     .stButton button {
-        background-color: #0a2342;
+        background-color: #1b263b;
         color: #ffffff;
         border: none;
         border-radius: 25px;
         padding: 12px 30px;
-        font-size: 16px;
-        font-weight: 500;
-        box-shadow: 0px 6px 12px rgba(0,0,0,0.15);
+        font-size: 18px;
+        font-weight: 600;
+        box-shadow: 0 8px 16px rgba(0,0,0,0.2);
         transition: background-color 0.3s ease, transform 0.2s ease;
     }
     .stButton button:hover {
-        background-color: #071a2b;
-        transform: scale(1.03);
+        background-color: #415a77;
+        transform: translateY(-3px);
     }
+    /* Champs de saisie */
     .stTextInput input {
-        border-radius: 8px;
+        border-radius: 10px;
         padding: 12px;
         font-size: 16px;
-        border: 1px solid #ccc;
+        border: 2px solid #ccc;
     }
     .stRadio label {
         font-size: 16px;
+        font-weight: 600;
         margin-right: 10px;
     }
     .stImage > div {
-        border: 1px solid #e0e0e0;
-        padding: 8px;
-        border-radius: 8px;
+        border: 2px solid #eee;
+        padding: 10px;
+        border-radius: 10px;
     }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – Extraction & Validation des Champs")
-st.write("Téléchargez une image de bordereau pour extraire automatiquement les numéros de série ou de pièces. Le système identifie les libellés (ex. 'Part Number', 'Serial Number', 'Designation Class') et tente d'extraire la valeur associée (qui peut se trouver en dessous ou à côté). Vous pouvez corriger et valider chaque champ. Seuls les champs validés sont enregistrés pour améliorer l'apprentissage automatique.")
+st.title("Daher Aerospace – Extraction et Validation des Champs")
+st.write("Téléchargez une image de bordereau. L'outil extrait les textes via OCR, regroupe les fragments par ligne pour identifier les libellés (ex. 'Part Number', 'Serial Number', 'Designation Class'), et tente d'extraire la valeur associée (souvent le numéro de série). Vous pouvez corriger, valider ou rejeter chaque extraction. Les feedbacks validés seront enregistrés pour entraîner le modèle ultérieurement.")
 
 # -----------------------------------------------------------
-# Connexion à la base SQLite pour feedback
+# Connexion à la base SQLite pour enregistrer le feedback
 # -----------------------------------------------------------
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
@@ -92,7 +96,7 @@ def load_ocr_model():
 ocr_reader = load_ocr_model()
 
 # -----------------------------------------------------------
-# Génération de Code‑barres (Code128)
+# Fonction pour générer un code‑barres en Code128
 # -----------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_barcode(sn):
@@ -104,7 +108,7 @@ def generate_barcode(sn):
     return buffer
 
 # -----------------------------------------------------------
-# Regroupement par ligne basé sur la position verticale
+# Fonction pour regrouper les fragments par ligne (basé sur la position verticale)
 # -----------------------------------------------------------
 def group_by_line(fields, threshold=15):
     sorted_fields = sorted(fields, key=lambda x: x["bbox"][0][1])
@@ -135,9 +139,9 @@ if uploaded_file:
     st.image(image, caption="Bordereau de réception", use_container_width=True)
     
     # -----------------------------------------------------------
-    # Extraction OCR
+    # Extraction OCR avec EasyOCR
     # -----------------------------------------------------------
-    with st.spinner("Extraction du texte..."):
+    with st.spinner("Extraction du texte via OCR..."):
         ocr_results = ocr_reader.readtext(uploaded_file.getvalue())
     candidate_fields = []
     ocr_texts = []
@@ -146,31 +150,31 @@ if uploaded_file:
         candidate_fields.append({"bbox": bbox, "text": text})
         ocr_texts.append(text)
     
+    # Regroupement par lignes
     groups = group_by_line(candidate_fields, threshold=15)
     
     # -----------------------------------------------------------
-    # Extraction des paires "libellé / valeur"
+    # Extraction des paires "libellé / valeur" basée sur la position
     # -----------------------------------------------------------
-    # On définit un pattern pour les libellés
     header_pattern = re.compile(r"(part\s*number|serial\s*(number|no)|n°\s*de\s*série|designation\s*class|serie)", re.IGNORECASE)
     extracted_fields = []
     for i, group in enumerate(groups):
         group_text = " ".join([field["text"] for field in group])
         if header_pattern.search(group_text):
-            # Si le header contient un ":", on prend la partie après le deux-points
+            # Si le libellé contient un deux-points, prendre la partie après le deux-points
             if ":" in group_text:
                 parts = group_text.split(":")
                 value = parts[1].strip()
                 if value:
                     extracted_fields.append(value)
                     continue
-            # Sinon, on prend le groupe suivant comme valeur
+            # Sinon, utiliser le groupe suivant comme valeur
             if i + 1 < len(groups):
                 next_group_text = " ".join([field["text"] for field in groups[i+1]]).strip()
                 if next_group_text:
                     extracted_fields.append(next_group_text)
     
-    # Si aucun header n'est trouvé, on filtre les groupes contenant des chiffres
+    # Option alternative : si aucun header n'est détecté, extraire les groupes contenant des chiffres
     if not extracted_fields:
         for group in groups:
             group_text = " ".join([field["text"] for field in group]).strip()
@@ -178,7 +182,7 @@ if uploaded_file:
                 extracted_fields.append(group_text)
     
     # -----------------------------------------------------------
-    # Affichage, validation et génération des codes‑barres
+    # Affichage des champs extraits et génération des codes‑barres associés
     # -----------------------------------------------------------
     if extracted_fields:
         st.subheader("Champs extraits et Codes‑barres associés")
@@ -199,13 +203,12 @@ if uploaded_file:
             if status == "Valider":
                 validated_fields.append(user_field)
         
-        # Message intuitif lors de l'enregistrement
+        # Afficher un message informatif lorsque l'utilisateur clique sur Enregistrer le feedback
         if st.button("Enregistrer le feedback"):
-            with st.spinner("Enregistrement du feedback..."):
+            with st.spinner("Enregistrement du feedback, veuillez patienter..."):
                 image_bytes = uploaded_file.getvalue()
                 full_ocr_text = " ".join(ocr_texts)
                 validated_text = " | ".join(validated_fields)
-                # Enregistrement asynchrone pour rapidité
                 def save_feedback():
                     c.execute("INSERT INTO feedback (image, ocr_text, validated_fields) VALUES (?, ?, ?)",
                               (image_bytes, full_ocr_text, validated_text))

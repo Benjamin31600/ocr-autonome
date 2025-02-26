@@ -10,7 +10,7 @@ import torch
 from transformers import LayoutLMv3Tokenizer, LayoutLMv3ForTokenClassification
 
 # -----------------------------------------------------------
-# CSS & Style : Interface ultra moderne et marketing
+# CSS & Style : Interface moderne et marketing
 # -----------------------------------------------------------
 st.markdown("""
     <style>
@@ -71,7 +71,7 @@ conn.commit()
 # -----------------------------------------------------------
 @st.cache_resource
 def load_ml_model():
-    # On utilise le modèle pré-entraîné public de Microsoft
+    # Utilise le modèle pré-entraîné public de Microsoft
     tokenizer = LayoutLMv3Tokenizer.from_pretrained("microsoft/layoutlmv3-base")
     model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base")
     model.eval()  # Mode évaluation
@@ -116,46 +116,38 @@ if uploaded_file:
         candidate_fields.append({"bbox": bbox, "text": text})
     
     # -----------------------------------------------------------
-    # Identification des champs pertinents via filtrage heuristique
+    # Utilisation du modèle ML pour identifier les champs pertinents (simulation)
     # -----------------------------------------------------------
     predicted_fields = []
-    # On définit ici des critères simples : conserver les textes contenant "part" ou "serial"
-    accepted_pattern = re.compile(r"(part|serial|serie)", re.IGNORECASE)
-    rejected_pattern = re.compile(r"(delivery|fax|tel|contact|date|order|quantity|adress|carrier|shipping|customer)", re.IGNORECASE)
+    max_length = 128  # Longueur fixe
+    # Créez un tableau fixe de 128 dummy boxes, en forçant chaque valeur à être un entier
+    fixed_dummy_boxes = [[int(0), int(0), int(1000), int(1000)] for _ in range(max_length)]
     
     for candidate in candidate_fields:
         txt = candidate["text"]
         if not txt.strip():
             continue
-        if accepted_pattern.search(txt) and not rejected_pattern.search(txt):
-            predicted_fields.append(txt)
-    
-    # -----------------------------------------------------------
-    # Encodage et filtrage des champs avec dummy boxes fixes
-    # -----------------------------------------------------------
-    final_fields = []
-    max_length = 128
-    fixed_dummy_boxes = [[0, 0, 1000, 1000] for _ in range(max_length)]
-    for txt in predicted_fields:
         try:
             inputs = tokenizer_ml([txt], boxes=[fixed_dummy_boxes], return_tensors="pt",
                                     truncation=True, padding="max_length", max_length=max_length)
-            with torch.no_grad():
-                outputs = model_ml(**inputs)
-            logits = outputs.logits
-            # Ici on ne fait pas de vraie classification, on conserve simplement le texte
-            final_fields.append(txt)
         except Exception as e:
             st.error(f"Erreur lors de l'encodage pour le texte '{txt}': {str(e)}")
             continue
+        with torch.no_grad():
+            outputs = model_ml(**inputs)
+        logits = outputs.logits  # (1, max_length, num_labels)
+        predicted_label_id = torch.argmax(logits, dim=-1)[0, 0].item()
+        # Simulation simple : si le texte contient "part" ou "serial", il est retenu.
+        if re.search(r"(part|serial|serie)", txt, re.IGNORECASE):
+            predicted_fields.append(txt)
     
     # -----------------------------------------------------------
-    # Affichage des champs détectés et génération des codes‑barres associés
+    # Affichage des champs et génération des codes‑barres associés
     # -----------------------------------------------------------
-    if final_fields:
+    if predicted_fields:
         st.subheader("Champs détectés et Codes‑barres associés")
         updated_fields = []
-        for idx, field in enumerate(final_fields):
+        for idx, field in enumerate(predicted_fields):
             col1, col2 = st.columns(2)
             with col1:
                 user_field = st.text_input(f"Champ {idx+1}", value=field, key=f"field_{idx}")
@@ -167,15 +159,15 @@ if uploaded_file:
                 except Exception as e:
                     st.error(f"Erreur pour {user_field} : {str(e)}")
     else:
-        st.warning("Aucun champ pertinent n'a été détecté après filtrage.")
+        st.warning("Aucun champ pertinent n'a été détecté par le modèle ML.")
     
     # -----------------------------------------------------------
-    # Enregistrement du feedback utilisateur pour amélioration continue
+    # Enregistrement du feedback utilisateur
     # -----------------------------------------------------------
     if st.button("Enregistrer le feedback"):
         image_bytes = uploaded_file.getvalue()
         full_ocr_text = " ".join([r["text"] for r in candidate_fields])
-        corrected_fields = " | ".join(updated_fields) if final_fields else ""
+        corrected_fields = " | ".join(updated_fields) if predicted_fields else ""
         c.execute("INSERT INTO feedback (image, ocr_text, corrected_fields) VALUES (?, ?, ?)",
                   (image_bytes, full_ocr_text, corrected_fields))
         conn.commit()

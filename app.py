@@ -46,11 +46,11 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – Extraction & Validation des Champs")
-st.write("Téléchargez une image de bordereau. Le système extrait des champs candidats (ex. Part Number, Serial Number). Vous pouvez modifier chaque champ et le valider (via une case à cocher). Seuls les champs validés seront enregistrés pour l'apprentissage.")
+st.title("Daher Aerospace – Extraction et Validation des Champs")
+st.write("Téléchargez une image de bordereau. Le système extrait des champs candidats, puis vous permet de corriger et valider ceux qui sont corrects. Seuls les champs validés seront enregistrés pour l'apprentissage.")
 
 # -----------------------------------------------------------
-# Base de données SQLite pour le feedback utilisateur
+# Base de données SQLite pour enregistrer le feedback utilisateur
 # -----------------------------------------------------------
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
@@ -85,7 +85,7 @@ def generate_barcode(sn):
     return buffer
 
 # -----------------------------------------------------------
-# Téléversement de l'image
+# Téléversement de l'image du bordereau
 # -----------------------------------------------------------
 uploaded_file = st.file_uploader("Téléchargez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
 if uploaded_file:
@@ -104,38 +104,48 @@ if uploaded_file:
         candidate_fields.append({"bbox": bbox, "text": text})
     
     # -----------------------------------------------------------
-    # Filtrage heuristique des fragments (basé sur des mots clés)
+    # Fonction pour extraire le numéro associé à partir d'un fragment
+    # -----------------------------------------------------------
+    def extract_number(text):
+        match = re.search(r"(?:part\s*number|serial\s*(?:number|no\.?))[:\s-]*(\S+)", text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return text
+    
+    # -----------------------------------------------------------
+    # Filtrage heuristique des fragments
     # -----------------------------------------------------------
     accepted_pattern = re.compile(r"(part\s*number|serial\s*(number|no)|n°\s*de\s*série|serie)", re.IGNORECASE)
     rejected_pattern = re.compile(r"(delivery|fax|tel|contact|date|order|quantity|adress|carrier|shipping|customer)", re.IGNORECASE)
-    candidate_fields_filtered = [cand["text"] for cand in candidate_fields
-                                 if cand["text"].strip() and
-                                 accepted_pattern.search(cand["text"]) and not rejected_pattern.search(cand["text"])]
+    candidate_fields_filtered = []
+    for cand in candidate_fields:
+        txt = cand["text"]
+        if txt.strip() and accepted_pattern.search(txt) and not rejected_pattern.search(txt):
+            candidate_fields_filtered.append(extract_number(txt))
     
     # -----------------------------------------------------------
-    # Validation par l'utilisateur : Affichage des champs candidats
+    # Validation par l'utilisateur
     # -----------------------------------------------------------
     if candidate_fields_filtered:
         st.subheader("Champs candidats détectés")
         validated_fields = []
         for idx, field in enumerate(candidate_fields_filtered):
-            col1, col2, col3 = st.columns([2,2,1])
+            col1, col2 = st.columns([3,1])
             with col1:
                 user_field = st.text_input(f"Champ {idx+1}", value=field, key=f"field_{idx}")
             with col2:
-                try:
-                    barcode_buffer = generate_barcode(user_field)
-                    st.image(barcode_buffer, caption=f"Code‑barres pour {user_field}", use_container_width=True)
-                except Exception as e:
-                    st.error(f"Erreur pour {user_field} : {str(e)}")
-            with col3:
-                # Case pour valider le champ
                 valid = st.checkbox("Valider", key=f"check_{idx}")
             if valid:
                 validated_fields.append(user_field)
+            # Affichage du code‑barres pour chaque champ (même non validé pour comparaison)
+            try:
+                barcode_buffer = generate_barcode(user_field)
+                st.image(barcode_buffer, caption=f"Code‑barres pour {user_field}", use_container_width=True)
+            except Exception as e:
+                st.error(f"Erreur pour {user_field} : {str(e)}")
         
         # -----------------------------------------------------------
-        # Enregistrement du feedback utilisateur (seuls les champs validés)
+        # Enregistrement du feedback validé
         # -----------------------------------------------------------
         if st.button("Enregistrer le feedback"):
             image_bytes = uploaded_file.getvalue()
@@ -147,4 +157,5 @@ if uploaded_file:
             st.success("Feedback enregistré !")
     else:
         st.warning("Aucun champ pertinent détecté par l'OCR.")
+
 

@@ -49,10 +49,10 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – Extraction Automatique des Champs")
-st.write("Téléchargez une image de bordereau. Le système utilise l'OCR et un modèle intelligent pour extraire les champs importants (ex. Part Number, Serial Number) et générer leur code‑barres associé. Vous pouvez modifier chaque valeur si nécessaire.")
+st.write("Téléchargez une image de bordereau. Le système utilise l'OCR pour extraire les champs importants (ex. Part Number, Serial Number) et génère leur code‑barres associé. Vous pouvez modifier chaque valeur si nécessaire.")
 
 # -----------------------------------------------------------
-# Base de données SQLite pour enregistrer le feedback utilisateur
+# Base de données SQLite pour le feedback utilisateur
 # -----------------------------------------------------------
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
@@ -71,7 +71,7 @@ conn.commit()
 # -----------------------------------------------------------
 @st.cache_resource
 def load_ml_model():
-    # On utilise le modèle pré-entraîné public de Microsoft
+    # Utilise le modèle pré-entraîné public de Microsoft
     tokenizer = LayoutLMv3Tokenizer.from_pretrained("microsoft/layoutlmv3-base")
     model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base")
     model.eval()  # Mode évaluation
@@ -119,17 +119,18 @@ if uploaded_file:
     # Utilisation d'une approche ML pour identifier les champs pertinents
     # -----------------------------------------------------------
     predicted_fields = []
-    max_length = 128  # Longueur fixe pour l'encodage
-    # On crée un ensemble de dummy boxes de longueur max_length (chaque boîte est [0,0,1000,1000])
-    fixed_dummy_boxes = [[0, 0, 1000, 1000] for _ in range(max_length)]
+    max_length = 128  # On fixe la longueur à 128 tokens
+    # Créer des dummy boxes fixes, en s'assurant que chaque valeur est un int
+    fixed_dummy_boxes = [[int(0), int(0), int(1000), int(1000)] for _ in range(max_length)]
     
     for candidate in candidate_fields:
         txt = candidate["text"]
-        if not txt.strip():
+        # Ignore les textes très courts
+        if len(txt.strip()) < 3:
             continue
         try:
-            # On encode le texte en fournissant exactement fixed_dummy_boxes
-            inputs = tokenizer_ml([txt], boxes=[fixed_dummy_boxes], return_tensors="pt",
+            # On encode le texte avec un nombre fixe de dummy boxes
+            inputs = tokenizer_ml([txt], boxes=[fixed_dummy_boxes], return_tensors="pt", 
                                     truncation=True, padding="max_length", max_length=max_length)
         except Exception as e:
             st.error(f"Erreur lors de l'encodage pour le texte '{txt}': {str(e)}")
@@ -138,8 +139,8 @@ if uploaded_file:
             outputs = model_ml(**inputs)
         logits = outputs.logits  # forme : (1, max_length, num_labels)
         predicted_label_id = torch.argmax(logits, dim=-1)[0, 0].item()
-        # Simulation simple : si le texte contient "part" ou "serial", on le considère pertinent.
-        if "part" in txt.lower() or "serial" in txt.lower():
+        # Simulation simple : si le texte contient "part" ou "serial", on le considère pertinent
+        if re.search(r"(part|serial)", txt, re.IGNORECASE):
             predicted_fields.append(txt)
     
     # -----------------------------------------------------------
@@ -173,3 +174,4 @@ if uploaded_file:
                   (image_bytes, full_ocr_text, corrected_fields))
         conn.commit()
         st.success("Feedback enregistré !")
+

@@ -6,11 +6,9 @@ from barcode.writer import ImageWriter
 from PIL import Image
 import io
 import sqlite3
-import torch
-from transformers import LayoutLMv3Tokenizer, LayoutLMv3ForTokenClassification
 
 # -----------------------------------------------------------
-# CSS & Style : Interface moderne et marketing
+# CSS & Style : Interface ultra moderne et marketing
 # -----------------------------------------------------------
 st.markdown("""
     <style>
@@ -48,8 +46,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – Extraction Automatique des Champs")
-st.write("Téléchargez une image de bordereau. Le système utilise l'OCR et un modèle intelligent pour extraire les champs importants (ex. Part Number, Serial Number) et générer leur code‑barres associé. Vous pouvez modifier chaque champ si nécessaire.")
+st.title("Daher Aerospace – Extraction Intelligente des Champs")
+st.write("Téléchargez une image de bordereau. Le système utilise l'OCR pour extraire le texte, puis applique une logique heuristique pour identifier les champs pertinents (par exemple, des numéros de série ou de pièces). Un code‑barres associé est généré pour chaque champ, et vous pouvez corriger les valeurs si nécessaire.")
 
 # -----------------------------------------------------------
 # Base de données SQLite pour enregistrer le feedback utilisateur
@@ -67,18 +65,8 @@ c.execute("""
 conn.commit()
 
 # -----------------------------------------------------------
-# Chargement des modèles avec mise en cache
+# Chargement du modèle OCR EasyOCR
 # -----------------------------------------------------------
-@st.cache_resource
-def load_ml_model():
-    # Utilise le modèle pré-entraîné public de Microsoft
-    tokenizer = LayoutLMv3Tokenizer.from_pretrained("microsoft/layoutlmv3-base")
-    model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base")
-    model.eval()  # Mode évaluation
-    return tokenizer, model
-
-tokenizer_ml, model_ml = load_ml_model()
-
 @st.cache_resource
 def load_ocr_model():
     return easyocr.Reader(['fr', 'en'])
@@ -116,33 +104,30 @@ if uploaded_file:
         candidate_fields.append({"bbox": bbox, "text": text})
     
     # -----------------------------------------------------------
-    # Utilisation du modèle ML pour identifier les champs pertinents (simulation)
+    # Filtrage heuristique des fragments
     # -----------------------------------------------------------
-    predicted_fields = []
-    max_length = 128  # Longueur fixe
-    # Créez un tableau fixe de 128 dummy boxes, en forçant chaque valeur à être un entier
-    fixed_dummy_boxes = [[int(0), int(0), int(1000), int(1000)] for _ in range(max_length)]
+    def is_candidate(text):
+        # Le fragment doit être suffisamment long
+        if len(text.strip()) < 5:
+            return False
+        # Doit contenir au moins une lettre et un chiffre
+        if not re.search(r"[A-Za-z]", text):
+            return False
+        if not re.search(r"\d", text):
+            return False
+        # Éventuellement, rejeter les fragments contenant certains mots non pertinents
+        if re.search(r"(delivery|fax|tel|contact|date|order|quantity|adress|carrier|shipping|customer)", text, re.IGNORECASE):
+            return False
+        return True
     
+    predicted_fields = []
     for candidate in candidate_fields:
         txt = candidate["text"]
-        if not txt.strip():
-            continue
-        try:
-            inputs = tokenizer_ml([txt], boxes=[fixed_dummy_boxes], return_tensors="pt",
-                                    truncation=True, padding="max_length", max_length=max_length)
-        except Exception as e:
-            st.error(f"Erreur lors de l'encodage pour le texte '{txt}': {str(e)}")
-            continue
-        with torch.no_grad():
-            outputs = model_ml(**inputs)
-        logits = outputs.logits  # (1, max_length, num_labels)
-        predicted_label_id = torch.argmax(logits, dim=-1)[0, 0].item()
-        # Simulation simple : si le texte contient "part" ou "serial", il est retenu.
-        if re.search(r"(part|serial|serie)", txt, re.IGNORECASE):
+        if is_candidate(txt):
             predicted_fields.append(txt)
     
     # -----------------------------------------------------------
-    # Affichage des champs et génération des codes‑barres associés
+    # Affichage des champs détectés et génération des codes‑barres associés
     # -----------------------------------------------------------
     if predicted_fields:
         st.subheader("Champs détectés et Codes‑barres associés")
@@ -159,7 +144,7 @@ if uploaded_file:
                 except Exception as e:
                     st.error(f"Erreur pour {user_field} : {str(e)}")
     else:
-        st.warning("Aucun champ pertinent n'a été détecté par le modèle ML.")
+        st.warning("Aucun champ pertinent n'a été détecté.")
     
     # -----------------------------------------------------------
     # Enregistrement du feedback utilisateur

@@ -49,7 +49,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – Extraction Automatique des Champs")
-st.write("Prenez en photo un bordereau de réception. Le système utilise un modèle intelligent pour extraire les champs importants (ex. Part Number, Serial Number) et génère leur code‑barres associé. Vous pouvez modifier chaque champ si nécessaire.")
+st.write("Prenez en photo un bordereau de réception. Le système utilise un modèle intelligent pour extraire les champs importants (ex. Part Number, Serial Number) et générer leur code‑barres associé. Vous pouvez modifier chaque champ si nécessaire.")
 
 # -----------------------------------------------------------
 # Base de données SQLite pour enregistrer le feedback utilisateur
@@ -118,27 +118,30 @@ if uploaded_file:
         candidate_fields.append({"bbox": bbox, "text": text})
     
     # -----------------------------------------------------------
-    # Utilisation du modèle ML pour identifier les champs pertinents
+    # Utilisation du modèle ML pour identifier les champs pertinents (simulation)
     # -----------------------------------------------------------
     predicted_fields = []
+    max_length = 128  # Nombre fixe de tokens attendu après padding
     for candidate in candidate_fields:
         txt = candidate["text"]
         if not txt.strip():
             continue
-        # Encodage temporaire pour obtenir la longueur de la séquence (après padding)
-        temp_enc = tokenizer_ml([txt], return_tensors="pt", truncation=True, padding="max_length", max_length=128)
-        seq_len = temp_enc["input_ids"].shape[1]
-        # Créer des dummy boxes pour chaque token de la séquence
+        # Utiliser tokenize pour obtenir le nombre de tokens et ajouter 2 pour [CLS] et [SEP]
+        tokens = tokenizer_ml.tokenize(txt)
+        seq_len = len(tokens) + 2
+        # On s'assure que seq_len ne dépasse pas max_length
+        if seq_len > max_length:
+            seq_len = max_length
         dummy_boxes = [[0, 0, 1000, 1000] for _ in range(seq_len)]
         try:
             inputs = tokenizer_ml([txt], boxes=[dummy_boxes], return_tensors="pt", 
-                                    truncation=True, padding="max_length", max_length=128)
+                                    truncation=True, padding="max_length", max_length=max_length)
         except Exception as e:
             st.error(f"Erreur lors de l'encodage pour le texte '{txt}': {str(e)}")
             continue
         with torch.no_grad():
             outputs = model_ml(**inputs)
-        logits = outputs.logits  # forme : (1, seq_len, num_labels)
+        logits = outputs.logits  # forme : (1, max_length, num_labels)
         predicted_label_id = torch.argmax(logits, dim=-1)[0, 0].item()
         # Simulation : si le texte contient "part" ou "serial", on le considère pertinent.
         if "part" in txt.lower() or "serial" in txt.lower():
@@ -175,7 +178,6 @@ if uploaded_file:
                   (image_bytes, full_ocr_text, corrected_fields))
         conn.commit()
         st.success("Feedback enregistré !")
-
 
 
 

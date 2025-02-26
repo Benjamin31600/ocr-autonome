@@ -8,7 +8,7 @@ import io
 import sqlite3
 
 # -----------------------------------------------------------
-# CSS & Style : Interface ultra moderne et marketing
+# CSS & Style : Interface moderne et marketing
 # -----------------------------------------------------------
 st.markdown("""
     <style>
@@ -46,11 +46,11 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – Extraction Intelligente des Champs")
-st.write("Téléchargez une image de bordereau. Le système utilise l'OCR pour extraire le texte, puis applique une logique heuristique pour identifier les champs pertinents (par exemple, des numéros de série ou de pièces). Un code‑barres associé est généré pour chaque champ, et vous pouvez corriger les valeurs si nécessaire.")
+st.title("Daher Aerospace – Extraction & Validation des Champs")
+st.write("Téléchargez une image de bordereau. Le système extrait des champs candidats (ex. Part Number, Serial Number). Vous pouvez modifier chaque champ et le valider (via une case à cocher). Seuls les champs validés seront enregistrés pour l'apprentissage.")
 
 # -----------------------------------------------------------
-# Base de données SQLite pour enregistrer le feedback utilisateur
+# Base de données SQLite pour le feedback utilisateur
 # -----------------------------------------------------------
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
@@ -59,7 +59,7 @@ c.execute("""
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         image BLOB,
         ocr_text TEXT,
-        corrected_fields TEXT
+        validated_fields TEXT
     )
 """)
 conn.commit()
@@ -85,7 +85,7 @@ def generate_barcode(sn):
     return buffer
 
 # -----------------------------------------------------------
-# Téléversement de l'image du bordereau
+# Téléversement de l'image
 # -----------------------------------------------------------
 uploaded_file = st.file_uploader("Téléchargez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
 if uploaded_file:
@@ -104,58 +104,47 @@ if uploaded_file:
         candidate_fields.append({"bbox": bbox, "text": text})
     
     # -----------------------------------------------------------
-    # Filtrage heuristique des fragments
+    # Filtrage heuristique des fragments (basé sur des mots clés)
     # -----------------------------------------------------------
-    def is_candidate(text):
-        # Le fragment doit être suffisamment long
-        if len(text.strip()) < 5:
-            return False
-        # Doit contenir au moins une lettre et un chiffre
-        if not re.search(r"[A-Za-z]", text):
-            return False
-        if not re.search(r"\d", text):
-            return False
-        # Éventuellement, rejeter les fragments contenant certains mots non pertinents
-        if re.search(r"(delivery|fax|tel|contact|date|order|quantity|adress|carrier|shipping|customer)", text, re.IGNORECASE):
-            return False
-        return True
-    
-    predicted_fields = []
-    for candidate in candidate_fields:
-        txt = candidate["text"]
-        if is_candidate(txt):
-            predicted_fields.append(txt)
+    accepted_pattern = re.compile(r"(part\s*number|serial\s*(number|no)|n°\s*de\s*série|serie)", re.IGNORECASE)
+    rejected_pattern = re.compile(r"(delivery|fax|tel|contact|date|order|quantity|adress|carrier|shipping|customer)", re.IGNORECASE)
+    candidate_fields_filtered = [cand["text"] for cand in candidate_fields
+                                 if cand["text"].strip() and
+                                 accepted_pattern.search(cand["text"]) and not rejected_pattern.search(cand["text"])]
     
     # -----------------------------------------------------------
-    # Affichage des champs détectés et génération des codes‑barres associés
+    # Validation par l'utilisateur : Affichage des champs candidats
     # -----------------------------------------------------------
-    if predicted_fields:
-        st.subheader("Champs détectés et Codes‑barres associés")
-        updated_fields = []
-        for idx, field in enumerate(predicted_fields):
-            col1, col2 = st.columns(2)
+    if candidate_fields_filtered:
+        st.subheader("Champs candidats détectés")
+        validated_fields = []
+        for idx, field in enumerate(candidate_fields_filtered):
+            col1, col2, col3 = st.columns([2,2,1])
             with col1:
                 user_field = st.text_input(f"Champ {idx+1}", value=field, key=f"field_{idx}")
-                updated_fields.append(user_field)
             with col2:
                 try:
                     barcode_buffer = generate_barcode(user_field)
                     st.image(barcode_buffer, caption=f"Code‑barres pour {user_field}", use_container_width=True)
                 except Exception as e:
                     st.error(f"Erreur pour {user_field} : {str(e)}")
+            with col3:
+                # Case pour valider le champ
+                valid = st.checkbox("Valider", key=f"check_{idx}")
+            if valid:
+                validated_fields.append(user_field)
+        
+        # -----------------------------------------------------------
+        # Enregistrement du feedback utilisateur (seuls les champs validés)
+        # -----------------------------------------------------------
+        if st.button("Enregistrer le feedback"):
+            image_bytes = uploaded_file.getvalue()
+            full_ocr_text = " ".join([r["text"] for r in candidate_fields])
+            validated_text = " | ".join(validated_fields)
+            c.execute("INSERT INTO feedback (image, ocr_text, validated_fields) VALUES (?, ?, ?)",
+                      (image_bytes, full_ocr_text, validated_text))
+            conn.commit()
+            st.success("Feedback enregistré !")
     else:
-        st.warning("Aucun champ pertinent n'a été détecté.")
-    
-    # -----------------------------------------------------------
-    # Enregistrement du feedback utilisateur
-    # -----------------------------------------------------------
-    if st.button("Enregistrer le feedback"):
-        image_bytes = uploaded_file.getvalue()
-        full_ocr_text = " ".join([r["text"] for r in candidate_fields])
-        corrected_fields = " | ".join(updated_fields) if predicted_fields else ""
-        c.execute("INSERT INTO feedback (image, ocr_text, corrected_fields) VALUES (?, ?, ?)",
-                  (image_bytes, full_ocr_text, corrected_fields))
-        conn.commit()
-        st.success("Feedback enregistré !")
-
+        st.warning("Aucun champ pertinent détecté par l'OCR.")
 

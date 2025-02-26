@@ -10,76 +10,76 @@ import threading
 import time
 
 # -----------------------------------------------------------
-# CSS & Style : Ultra moderne et Hype (inspiré de Daher Aerospace et Fiverr)
+# CSS & Style : Ultra moderne avec effet glassmorphism
 # -----------------------------------------------------------
 st.markdown("""
     <style>
-    /* Importation de la typographie Montserrat */
-    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600&display=swap');
-    
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;500;700&display=swap');
     body {
-        background: linear-gradient(135deg, #0d1b2a, #1b263b);
-        font-family: 'Montserrat', sans-serif;
+        background: linear-gradient(135deg, #0c234b, #1b3a6d);
+        font-family: 'Poppins', sans-serif;
         color: #ffffff;
         margin: 0;
         padding: 0;
     }
-    /* Conteneur principal stylisé */
     [data-testid="stAppViewContainer"] {
-        background: #ffffff;
-        border-radius: 15px;
+        background: rgba(255, 255, 255, 0.85);
+        backdrop-filter: blur(10px);
+        border-radius: 20px;
         padding: 2rem;
-        box-shadow: 0 12px 24px rgba(0,0,0,0.2);
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
         margin: 2rem auto;
         max-width: 1200px;
     }
     h1, h2, h3 {
-        color: #0d1b2a;
+        color: #0c234b;
+        font-weight: 700;
     }
-    /* Boutons modernes */
     .stButton button {
-        background-color: #0d1b2a;
+        background-color: #0c234b;
         color: #ffffff;
         border: none;
-        border-radius: 25px;
-        padding: 12px 30px;
+        border-radius: 30px;
+        padding: 14px 40px;
         font-size: 18px;
         font-weight: 600;
-        box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+        box-shadow: 0 10px 20px rgba(0,0,0,0.2);
         transition: background-color 0.3s ease, transform 0.2s ease;
     }
     .stButton button:hover {
-        background-color: #415a77;
-        transform: translateY(-3px);
+        background-color: #152d4a;
+        transform: translateY(-4px);
     }
-    /* Champs de saisie */
     .stTextInput input {
-        border-radius: 10px;
-        padding: 12px;
+        border-radius: 12px;
+        padding: 14px;
         font-size: 16px;
-        border: 2px solid #ccc;
+        border: 2px solid #e0e0e0;
         width: 100%;
+        transition: border-color 0.2s ease;
     }
-    /* Boutons radio */
+    .stTextInput input:focus {
+        border-color: #0c234b;
+    }
     .stRadio label {
         font-size: 16px;
         font-weight: 600;
         margin-right: 10px;
+        color: #0c234b;
     }
-    /* Style des images */
     .stImage > div {
-        border: 2px solid #eee;
+        border: 2px solid #f0f0f0;
         padding: 10px;
-        border-radius: 10px;
+        border-radius: 12px;
     }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – Extraction & Validation des Champs")
-st.write("Téléchargez une image de bordereau. Notre outil extrait automatiquement les fragments de texte, identifie les libellés (ex. 'Part Number', 'Serial Number', 'Designation Class') et tente d'isoler la valeur associée (souvent le numéro de série ou de pièce, pouvant se trouver en dessous ou à côté). Vous pouvez corriger ces valeurs, puis sélectionner 'Valider' ou 'Rejeter' pour chaque champ. Seuls les champs validés seront enregistrés et utilisés pour l'apprentissage automatique ultérieur.")
+st.write("Téléchargez une image de bordereau. L'outil extrait les fragments de texte, identifie les libellés (ex. 'Part Number', 'Serial Number', 'Designation Class') et tente d'extraire la valeur associée (souvent le numéro de série). Corrigez, validez ou rejetez chaque extraction pour que le système puisse apprendre automatiquement.")
 
 # -----------------------------------------------------------
-# Connexion à la base SQLite pour enregistrer le feedback
+# Connexion à la base SQLite pour le feedback
 # -----------------------------------------------------------
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
@@ -114,7 +114,7 @@ def generate_barcode(sn):
     return buffer
 
 # -----------------------------------------------------------
-# Fonction pour regrouper les fragments par ligne (basé sur la position verticale)
+# Fonction pour regrouper les fragments par ligne
 # -----------------------------------------------------------
 def group_by_line(fields, threshold=15):
     sorted_fields = sorted(fields, key=lambda x: x["bbox"][0][1])
@@ -144,9 +144,7 @@ if uploaded_file:
     image.thumbnail((1024, 1024))
     st.image(image, caption="Bordereau de réception", use_container_width=True)
     
-    # -----------------------------------------------------------
-    # Extraction OCR avec EasyOCR
-    # -----------------------------------------------------------
+    # Extraction OCR
     with st.spinner("Extraction du texte..."):
         ocr_results = ocr_reader.readtext(uploaded_file.getvalue())
     candidate_fields = []
@@ -166,20 +164,17 @@ if uploaded_file:
     for i, group in enumerate(groups):
         group_text = " ".join([field["text"] for field in group])
         if header_pattern.search(group_text):
-            # On essaye d'extraire la valeur à droite du libellé
             if ":" in group_text:
                 parts = group_text.split(":")
                 value = parts[1].strip()
                 if value:
                     extracted_fields.append(value)
                     continue
-            # Sinon, on prend le groupe suivant comme valeur
             if i + 1 < len(groups):
                 next_group_text = " ".join([field["text"] for field in groups[i+1]]).strip()
                 if next_group_text:
                     extracted_fields.append(next_group_text)
     
-    # Si aucun header n'est détecté, on peut utiliser une alternative
     if not extracted_fields:
         for group in groups:
             group_text = " ".join([field["text"] for field in group]).strip()
@@ -187,15 +182,14 @@ if uploaded_file:
                 extracted_fields.append(group_text)
     
     # -----------------------------------------------------------
-    # Affichage des champs extraits, validation et génération des codes‑barres
+    # Affichage, validation et génération des codes‑barres
     # -----------------------------------------------------------
     if extracted_fields:
         st.subheader("Champs extraits et Codes‑barres associés")
         validated_fields = []
         for idx, field in enumerate(extracted_fields):
-            col1, col2, col3 = st.columns([3, 2, 2])
+            col1, col2, col3 = st.columns([3,2,2])
             with col1:
-                # L'utilisateur peut corriger la valeur extraite
                 user_field = st.text_input(f"Champ {idx+1}", value=field, key=f"field_{idx}")
             with col2:
                 try:
@@ -204,12 +198,9 @@ if uploaded_file:
                 except Exception as e:
                     st.error(f"Erreur pour {user_field} : {str(e)}")
             with col3:
-                # Validation avec bouton radio : Valider ou Rejeter
                 status = st.radio("Statut", options=["Valider", "Rejeter"], key=f"status_{idx}")
             if status == "Valider":
                 validated_fields.append(user_field)
-        
-        # Bouton d'enregistrement du feedback
         if st.button("Enregistrer le feedback"):
             with st.spinner("Enregistrement du feedback..."):
                 image_bytes = uploaded_file.getvalue()
@@ -223,6 +214,10 @@ if uploaded_file:
                 st.success("Feedback enregistré !")
     else:
         st.warning("Aucun champ pertinent n'a été extrait.")
+    
+    end_time = time.time()
+    st.write(f"Temps de traitement : {end_time - start_time:.2f} secondes")
+
     
     end_time = time.time()
     st.write(f"Temps de traitement : {end_time - start_time:.2f} secondes")

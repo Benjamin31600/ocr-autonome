@@ -47,10 +47,10 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – Extraction et Validation des Champs")
-st.write("Téléchargez une image de bordereau. Le système extrait les fragments de texte et tente de repérer les libellés (ex. 'Part Number', 'Serial Number'). Pour chaque libellé, il recherche ensuite la valeur associée (le numéro) qui se trouve généralement en dessous ou à côté. Vous pourrez ensuite valider ou corriger ces extractions.")
+st.write("Téléchargez une image de bordereau. Le système extrait les champs candidats et tente d'isoler les numéros (ex. Part Number, Serial Number). Vous pouvez modifier chaque champ, puis indiquer via un bouton radio si le champ est valide ou rejeté. Seuls les champs validés seront utilisés pour l'apprentissage.")
 
 # -----------------------------------------------------------
-# Base de données SQLite pour enregistrer le feedback
+# Base de données SQLite pour le feedback utilisateur
 # -----------------------------------------------------------
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
@@ -59,13 +59,14 @@ c.execute("""
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         image BLOB,
         ocr_text TEXT,
-        validated_fields TEXT
+        validated_fields TEXT,
+        rejected_fields TEXT
     )
 """)
 conn.commit()
 
 # -----------------------------------------------------------
-# Chargement d'EasyOCR
+# Chargement du modèle OCR EasyOCR
 # -----------------------------------------------------------
 @st.cache_resource
 def load_ocr_model():
@@ -73,7 +74,7 @@ def load_ocr_model():
 ocr_reader = load_ocr_model()
 
 # -----------------------------------------------------------
-# Fonction pour générer un code‑barres
+# Fonction pour générer un code‑barres pour un champ donné
 # -----------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_barcode(sn):
@@ -85,7 +86,7 @@ def generate_barcode(sn):
     return buffer
 
 # -----------------------------------------------------------
-# Téléversement de l'image
+# Téléversement de l'image du bordereau
 # -----------------------------------------------------------
 uploaded_file = st.file_uploader("Téléchargez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
 if uploaded_file:
@@ -104,75 +105,30 @@ if uploaded_file:
         candidate_fields.append({"bbox": bbox, "text": text})
     
     # -----------------------------------------------------------
-    # Calcul de positions pour chaque fragment
+    # Filtrage heuristique des fragments (basé sur des mots clés)
     # -----------------------------------------------------------
-    def get_bbox_metrics(bbox):
-        # bbox est une liste de 4 points: [[x0,y0], [x1,y1], [x2,y2], [x3,y3]]
-        xs = [pt[0] for pt in bbox]
-        ys = [pt[1] for pt in bbox]
-        top_y = min(ys)
-        bottom_y = max(ys)
-        center_x = sum(xs) / 4
-        return top_y, bottom_y, center_x
-
+    accepted_pattern = re.compile(r"(part\s*number|serial\s*(number|no)|n°\s*de\s*série|serie)", re.IGNORECASE)
+    rejected_pattern = re.compile(r"(delivery|fax|tel|contact|date|order|quantity|adress|carrier|shipping|customer)", re.IGNORECASE)
+    candidate_fields_filtered = []
     for cand in candidate_fields:
-        top_y, bottom_y, center_x = get_bbox_metrics(cand["bbox"])
-        cand["top_y"] = top_y
-        cand["bottom_y"] = bottom_y
-        cand["center_x"] = center_x
-
-    # -----------------------------------------------------------
-    # Extraction des paires "libellé" et "valeur"
-    # -----------------------------------------------------------
-    header_pattern = re.compile(r"(part\s*number|serial\s*(number|no)|n°\s*de\s*série|serie)", re.IGNORECASE)
-    extracted_fields = []
-    # Pour chaque fragment qui ressemble à un header, on cherche une valeur en dessous ou à côté.
-    for i, cand in enumerate(candidate_fields):
         txt = cand["text"]
-        if header_pattern.search(txt):
-            # Si le header contient déjà un ":", on suppose que la valeur est sur la même ligne.
-            if ":" in txt:
-                parts = txt.split(":")
-                header = parts[0].strip()
-                value = parts[1].strip() if len(parts) > 1 else ""
-                if value:
-                    extracted_fields.append(value)
-                    continue
-            # Sinon, on cherche le fragment suivant dont le top_y est proche du bottom_y du header 
-            # et dont le center_x est proche (dans une marge de 50 pixels)
-            header_bottom = cand["bottom_y"]
-            header_center = cand["center_x"]
-            candidate_value = None
-            min_distance = float("inf")
-            for j, other in enumerate(candidate_fields):
-                if j == i:
-                    continue
-                # Considérer uniquement les fragments situés en dessous du header
-                if other["top_y"] > header_bottom:
-                    # Vérifier l'alignement horizontal
-                    if abs(other["center_x"] - header_center) < 50:
-                        distance = other["top_y"] - header_bottom
-                        if distance < min_distance:
-                            min_distance = distance
-                            candidate_value = other["text"].strip()
-            if candidate_value:
-                extracted_fields.append(candidate_value)
-    
-    # Option : si aucune extraction par header n'est trouvée, utiliser les fragments filtrés
-    if not extracted_fields:
-        # Filtrer les fragments qui contiennent des chiffres (pour avoir une valeur)
-        for cand in candidate_fields:
-            if re.search(r"\d", cand["text"]):
-                extracted_fields.append(cand["text"].strip())
+        if txt.strip() and accepted_pattern.search(txt) and not rejected_pattern.search(txt):
+            # Pour extraire la valeur associée, on tente de découper après un deux-points, sinon on garde le texte
+            parts = re.split("[:\-]", txt)
+            if len(parts) > 1:
+                candidate_fields_filtered.append(parts[1].strip())
+            else:
+                candidate_fields_filtered.append(txt.strip())
     
     # -----------------------------------------------------------
-    # Affichage des champs extraits et génération des codes‑barres associés
+    # Validation par l'utilisateur : Affichage des champs candidats
     # -----------------------------------------------------------
-    if extracted_fields:
-        st.subheader("Champs extraits et Codes‑barres associés")
+    if candidate_fields_filtered:
+        st.subheader("Champs candidats détectés")
         validated_fields = []
-        for idx, field in enumerate(extracted_fields):
-            col1, col2, col3 = st.columns([3, 2, 1])
+        rejected_fields = []
+        for idx, field in enumerate(candidate_fields_filtered):
+            col1, col2, col3 = st.columns([3, 2, 2])
             with col1:
                 user_field = st.text_input(f"Champ {idx+1}", value=field, key=f"field_{idx}")
             with col2:
@@ -182,9 +138,12 @@ if uploaded_file:
                 except Exception as e:
                     st.error(f"Erreur pour {user_field} : {str(e)}")
             with col3:
-                valid = st.checkbox("Valider", key=f"check_{idx}")
-            if valid:
+                # Utiliser un bouton radio pour la validation
+                status = st.radio("Statut", options=["Valider", "Rejeter", "Neutre"], key=f"status_{idx}")
+            if status == "Valider":
                 validated_fields.append(user_field)
+            elif status == "Rejeter":
+                rejected_fields.append(user_field)
         
         # -----------------------------------------------------------
         # Enregistrement du feedback utilisateur
@@ -192,11 +151,13 @@ if uploaded_file:
         if st.button("Enregistrer le feedback"):
             image_bytes = uploaded_file.getvalue()
             full_ocr_text = " ".join([r["text"] for r in candidate_fields])
-            validated_text = " | ".join(validated_fields)
             c.execute("INSERT INTO feedback (image, ocr_text, validated_fields) VALUES (?, ?, ?)",
-                      (image_bytes, full_ocr_text, validated_text))
+                      (image_bytes, full_ocr_text, " | ".join(validated_fields)))
+            c.execute("INSERT INTO feedback (image, ocr_text, validated_fields) VALUES (?, ?, ?)",
+                      (image_bytes, full_ocr_text, " | ".join(rejected_fields)))
             conn.commit()
             st.success("Feedback enregistré !")
     else:
-        st.warning("Aucun champ pertinent n'a été extrait.")
+        st.warning("Aucun champ pertinent n'a été détecté par l'OCR.")
+
 

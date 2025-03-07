@@ -11,10 +11,9 @@ import threading
 import time
 
 # -----------------------------------------------------------
-# Configuration de la page et style
+# Configuration Streamlit & CSS
 # -----------------------------------------------------------
-st.set_page_config(page_title="Daher Aerospace – OCR Multi-CodeBarres", page_icon="✈️", layout="wide")
-
+st.set_page_config(page_title="Daher Aerospace – OCR Multi Code-Barres", page_icon="✈️", layout="wide")
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
@@ -81,11 +80,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – Extraction & Validation (Multi Code‑barres)")
-st.write("Téléversez une image, sélectionnez la zone avec la souris, laissez l'OCR extraire le texte, et obtenez plusieurs codes‑barres (un par numéro). Vous pouvez corriger ou rejeter certains numéros avant l'enregistrement du feedback.")
+# -----------------------------------------------------------
+# Titre
+# -----------------------------------------------------------
+st.title("Daher Aerospace – Extraction OCR et Validation Multi Code‑Barres")
+st.write("Sélectionnez la zone d'intérêt sur l'image, laissez l'OCR extraire le texte, puis une détection automatique tente de repérer plusieurs numéros de série. Vous pouvez corriger et valider chaque numéro, générant un code‑barres distinct.")
 
 # -----------------------------------------------------------
-# Base SQLite pour enregistrer le feedback
+# Connexion à la base SQLite
 # -----------------------------------------------------------
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
@@ -100,7 +102,7 @@ c.execute("""
 conn.commit()
 
 # -----------------------------------------------------------
-# Charger EasyOCR (pour extraction de texte)
+# Charger EasyOCR
 # -----------------------------------------------------------
 @st.cache_resource
 def load_ocr_model():
@@ -108,7 +110,7 @@ def load_ocr_model():
 ocr_reader = load_ocr_model()
 
 # -----------------------------------------------------------
-# Génération de Code‑barres (Code128)
+# Génération de code-barres
 # -----------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_barcode(sn):
@@ -125,17 +127,17 @@ def generate_barcode(sn):
 uploaded_file = st.file_uploader("Téléchargez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
 if uploaded_file:
     start_time = time.time()
-    image = Image.open(uploaded_file)
     
     # Affichage de l'image originale
+    image = Image.open(uploaded_file)
     st.image(image, caption="Image originale", use_column_width=True)
     
     # Sélection de la zone avec st_cropper
-    st.write("Sélectionnez la zone contenant les numéros (dessinez une boîte avec la souris) :")
+    st.write("Sélectionnez la zone contenant les numéros de série (dessinez une boîte avec votre souris) :")
     cropped_img = st_cropper(image, realtime_update=True, box_color="#0d1b2a", aspect_ratio=None)
     st.image(cropped_img, caption="Zone sélectionnée", use_column_width=True)
     
-    # Convertir la zone recadrée en bytes pour l'OCR
+    # Convertir l'image recadrée en bytes
     buf = io.BytesIO()
     cropped_img.save(buf, format="PNG")
     cropped_bytes = buf.getvalue()
@@ -144,28 +146,31 @@ if uploaded_file:
     with st.spinner("Extraction du texte via OCR..."):
         ocr_results = ocr_reader.readtext(cropped_bytes)
     extracted_text = " ".join([result[1] for result in ocr_results])
+    
     st.markdown("**Texte extrait :**")
     st.write(extracted_text)
     
     # -----------------------------------------------------------
-    # Détection automatique des numéros (exemple : SER CHT \d+)
+    # Détection automatique via une regex
+    # (Par exemple, SER CHT \d+)
+    # Ajustez le pattern à votre format
     # -----------------------------------------------------------
-    pattern = r"(SER\s+CHT\s+\d+)"  # Ajustez selon votre format
+    pattern = r"(SER\s+CHT\s+\d+)"  # Ex : "SER CHT 1470"
     auto_detected = re.findall(pattern, extracted_text)
     
-    st.subheader("Détection automatique de plusieurs numéros de série")
+    st.subheader("Détection automatique de multiples numéros")
     if auto_detected:
-        st.write("Numéros détectés automatiquement :", auto_detected)
+        st.write(f"Numéros détectés automatiquement : {auto_detected}")
     else:
-        st.write("Aucun numéro détecté automatiquement. Vous pouvez séparer manuellement ci-dessous.")
+        st.write("Aucun numéro détecté automatiquement. Vous pouvez compléter manuellement.")
     
-    # Champ de texte pour séparer/ajuster manuellement
-    st.subheader("Séparation manuelle (optionnel)")
-    user_text = st.text_area("Corrigez ou séparez les numéros (un par ligne, par ex.)", value=extracted_text, height=150)
+    # Champ de texte pour saisie/correction manuelle
+    st.subheader("Séparation / Correction manuelle (optionnel)")
+    user_text = st.text_area("Si nécessaire, séparez vos numéros (un par ligne)", value=extracted_text, height=150)
     
-    # Combiner détection auto et saisie manuelle
+    # Fusion auto + manuel
     lines_manual = [l.strip() for l in user_text.split('\n') if l.strip()]
-    combined = list(set(auto_detected + lines_manual))  # Éviter doublons avec set()
+    combined = list(set(auto_detected + lines_manual))  # set() pour éviter doublons
     
     # -----------------------------------------------------------
     # Validation / Correction finale
@@ -174,19 +179,19 @@ if uploaded_file:
     validated_serials = []
     for sn in combined:
         st.write(f"**Numéro détecté :** {sn}")
-        corrected_sn = st.text_input(f"Corriger si besoin :", value=sn, key=f"txt_{sn}")
+        corrected_sn = st.text_input(f"Corrigez si besoin :", value=sn, key=f"txt_{sn}")
         status = st.radio(f"Statut pour {sn}", ["Valider", "Rejeter"], key=f"radio_{sn}")
         if status == "Valider":
             validated_serials.append(corrected_sn)
     
-    # Génération des codes‑barres pour chaque numéro validé
+    # Bouton pour générer un code-barres par numéro validé
     if st.button("Générer codes‑barres multiples"):
         st.write("Codes‑barres individuels :")
         for vsn in validated_serials:
             barcode_buffer = generate_barcode(vsn)
             st.image(barcode_buffer, caption=f"Code‑barres pour {vsn}", use_column_width=True)
     
-    # Enregistrement final du feedback
+    # Bouton pour enregistrer le feedback
     if st.button("Enregistrer le feedback"):
         with st.spinner("Enregistrement du feedback..."):
             image_bytes = uploaded_file.getvalue()
@@ -199,5 +204,3 @@ if uploaded_file:
     
     end_time = time.time()
     st.write(f"Temps de traitement : {end_time - start_time:.2f} secondes")
-
-

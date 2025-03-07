@@ -1,5 +1,5 @@
 import streamlit as st
-from streamlit_cropper import st_cropper
+from streamlit_cropper import st_cropper  # Ce module permet de sélectionner directement une zone sur l'image avec la souris
 import easyocr
 import re
 import barcode
@@ -11,12 +11,14 @@ import threading
 import time
 
 # -----------------------------------------------------------
-# Configuration de la page et style (inspiration Daher Aerospace & Fiverr)
+# Configuration de la page et Style Ultra Moderne (inspiré de Daher Aerospace & Fiverr)
 # -----------------------------------------------------------
 st.set_page_config(page_title="Daher Aerospace – Annotation OCR", page_icon="✈️", layout="wide")
 st.markdown("""
     <style>
+    /* Importation de la police Poppins pour une typographie moderne */
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
+    
     body {
         background: linear-gradient(135deg, #0d1b2a, #1b263b);
         font-family: 'Poppins', sans-serif;
@@ -24,6 +26,7 @@ st.markdown("""
         margin: 0;
         padding: 0;
     }
+    /* Conteneur principal avec effet glassmorphism */
     [data-testid="stAppViewContainer"] {
         background: rgba(255, 255, 255, 0.92);
         backdrop-filter: blur(8px);
@@ -33,8 +36,15 @@ st.markdown("""
         margin: 2rem auto;
         max-width: 1400px;
     }
-    h1 { font-size: 3rem; color: #0d1b2a; }
-    h2 { font-size: 2rem; color: #0d1b2a; }
+    h1 {
+        font-size: 3rem;
+        color: #0d1b2a;
+    }
+    h2 {
+        font-size: 2rem;
+        color: #0d1b2a;
+    }
+    /* Boutons modernes */
     .stButton button {
         background-color: #0d1b2a;
         color: #ffffff;
@@ -50,6 +60,7 @@ st.markdown("""
         background-color: #415a77;
         transform: translateY(-4px);
     }
+    /* Champs de saisie */
     .stTextInput input {
         border-radius: 12px;
         padding: 14px;
@@ -57,13 +68,17 @@ st.markdown("""
         border: 2px solid #ccc;
         transition: border-color 0.3s ease;
     }
-    .stTextInput input:focus { border-color: #0d1b2a; }
+    .stTextInput input:focus {
+        border-color: #0d1b2a;
+    }
+    /* Boutons radio */
     .stRadio label {
         font-size: 16px;
         font-weight: 600;
         margin-right: 10px;
         color: #0d1b2a;
     }
+    /* Style des images */
     .stImage > div {
         border: 2px solid #eee;
         padding: 10px;
@@ -73,10 +88,10 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – Annotation OCR & Validation")
-st.write("Téléchargez une image de bordereau, sélectionnez directement la zone d'intérêt avec votre souris, puis laissez l'OCR extraire le texte. Corrigez et validez le texte pour que le système puisse apprendre et s'améliorer automatiquement.")
+st.write("Téléchargez une image de bordereau, sélectionnez directement la zone d'intérêt avec votre souris, puis laissez l'OCR extraire le texte. Corrigez et validez le résultat pour améliorer l'apprentissage automatique.")
 
 # -----------------------------------------------------------
-# Connexion à la base de données SQLite pour le feedback
+# Connexion à la base de données SQLite pour enregistrer le feedback
 # -----------------------------------------------------------
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
@@ -91,7 +106,7 @@ c.execute("""
 conn.commit()
 
 # -----------------------------------------------------------
-# Charger EasyOCR
+# Charger EasyOCR (pour extraire le texte)
 # -----------------------------------------------------------
 @st.cache_resource
 def load_ocr_model():
@@ -99,7 +114,7 @@ def load_ocr_model():
 ocr_reader = load_ocr_model()
 
 # -----------------------------------------------------------
-# Fonction pour générer un code‑barres (Code128)
+# Fonction pour générer un code‑barres à partir du texte (Code128)
 # -----------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_barcode(sn):
@@ -120,19 +135,19 @@ if uploaded_file:
     st.image(image, caption="Image originale", use_column_width=True)
     
     # -----------------------------------------------------------
-    # Sélection interactive de la zone d'intérêt avec st_cropper
+    # Sélection interactive avec st_cropper (utilisez votre souris)
     # -----------------------------------------------------------
-    st.write("Sélectionnez la zone contenant le numéro de série ou de pièce en dessinant directement sur l'image:")
+    st.write("Sélectionnez la zone contenant le numéro (dessinez une boîte avec votre souris) :")
     cropped_img = st_cropper(image, realtime_update=True, box_color="#0d1b2a", aspect_ratio=None)
     st.image(cropped_img, caption="Zone sélectionnée", use_column_width=True)
     
-    # Convertir l'image recadrée en bytes (pour l'OCR)
+    # Convertir l'image recadrée en bytes pour l'OCR
     buf = io.BytesIO()
     cropped_img.save(buf, format="PNG")
     cropped_bytes = buf.getvalue()
     
     # -----------------------------------------------------------
-    # Extraction OCR sur la zone sélectionnée
+    # Extraction OCR sur la zone recadrée
     # -----------------------------------------------------------
     with st.spinner("Extraction du texte via OCR..."):
         ocr_results = ocr_reader.readtext(cropped_bytes)
@@ -149,11 +164,11 @@ if uploaded_file:
     # Génération du code‑barres pour le texte validé
     try:
         barcode_buffer = generate_barcode(user_text)
-        st.image(barcode_buffer, caption="Code‑barres pour le texte validé", use_column_width=True)
+        st.image(barcode_buffer, caption="Code‑barres pour le texte validé", use_container_width=True)
     except Exception as e:
         st.error(f"Erreur lors de la génération du code‑barres : {str(e)}")
     
-    # Bouton de validation et enregistrement du feedback
+    # Bouton pour valider et enregistrer le feedback
     if st.button("Valider et Enregistrer le Feedback"):
         with st.spinner("Enregistrement du feedback..."):
             image_bytes = uploaded_file.getvalue()
@@ -168,5 +183,4 @@ if uploaded_file:
     
     end_time = time.time()
     st.write(f"Temps de traitement : {end_time - start_time:.2f} secondes")
-
 

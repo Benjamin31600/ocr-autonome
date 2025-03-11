@@ -4,17 +4,38 @@ import easyocr
 import re
 import barcode
 from barcode.writer import ImageWriter
-from PIL import Image
+from PIL import Image, ExifTags
 import io
 import sqlite3
 import threading
 import time
 
 # -----------------------------------------------------------
-# Configuration de la page et Style Ultra Moderne
+# Fonction pour corriger l'orientation de l'image via EXIF
+# -----------------------------------------------------------
+def correct_image_orientation(image):
+    try:
+        exif = image._getexif()
+        if exif is not None:
+            for tag, value in exif.items():
+                decoded = ExifTags.TAGS.get(tag, tag)
+                if decoded == "Orientation":
+                    orientation = value
+                    if orientation == 3:
+                        image = image.rotate(180, expand=True)
+                    elif orientation == 6:
+                        image = image.rotate(270, expand=True)
+                    elif orientation == 8:
+                        image = image.rotate(90, expand=True)
+                    break
+    except Exception as e:
+        st.warning(f"Erreur d'orientation : {e}")
+    return image
+
+# -----------------------------------------------------------
+# Configuration de la page et Style
 # -----------------------------------------------------------
 st.set_page_config(page_title="Daher – Multi Code-barres (Industriel)", page_icon="✈️", layout="wide")
-
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
@@ -34,9 +55,6 @@ st.markdown("""
         margin: 2rem auto;
         box-shadow: 0 10px 20px rgba(0,0,0,0.2);
     }
-    h1 {
-        color: #0d1b2a;
-    }
     .stButton button {
         background-color: #0d1b2a;
         color: #fff;
@@ -52,21 +70,14 @@ st.markdown("""
         background-color: #415a77;
         transform: translateY(-3px);
     }
-    .stTextInput input {
-        border-radius: 8px;
-        padding: 10px;
-        font-size: 14px;
-        border: 1px solid #ccc;
-        width: 100%;
-    }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR Multi Code‑barres")
-st.write("1) Téléversez une image. 2) Sélectionnez la zone avec la souris. 3) Laissez l'OCR extraire le texte. 4) Séparez manuellement les numéros (un par ligne). 5) Génèrez et enregistrez les codes‑barres.")
+st.write("Téléchargez une image, sélectionnez la zone avec la souris, et laissez l'OCR extraire le texte. Corrigez les numéros de série en les séparant par ligne pour générer un code‑barres par numéro.")
 
 # -----------------------------------------------------------
-# Base SQLite pour feedback
+# Connexion à la base SQLite
 # -----------------------------------------------------------
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
@@ -89,7 +100,7 @@ def load_ocr_model():
 ocr_reader = load_ocr_model()
 
 # -----------------------------------------------------------
-# Fonction pour générer un code‑barres (Code128)
+# Génération de code‑barres
 # -----------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_barcode(sn):
@@ -104,49 +115,41 @@ def generate_barcode(sn):
 # Téléversement de l'image
 # -----------------------------------------------------------
 uploaded_file = st.file_uploader("Téléchargez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
+
 if uploaded_file:
     start_time = time.time()
     
-    # Ouvrir l'image
+    # Ouvrir et corriger l'orientation de l'image
     image = Image.open(uploaded_file)
+    image = correct_image_orientation(image)
     
-    # Réduction de la résolution pour éviter les plantages (par exemple, max 2000x2000)
-    image.thumbnail((2000, 2000))
-    st.image(image, caption="Image originale (redimensionnée)", use_column_width=True)
+    # Réduire la résolution pour éviter des plantages
+    image.thumbnail((1500, 1500))
+    st.image(image, caption="Image originale (redimensionnée)", use_container_width=True)
     
-    # -----------------------------------------------------------
-    # Sélection interactive de la zone avec st_cropper
-    # -----------------------------------------------------------
+    # Sélection de la zone via st_cropper
     st.write("Sélectionnez la zone contenant les numéros (dessinez une boîte avec la souris) :")
     cropped_img = st_cropper(image, realtime_update=True, box_color="#0d1b2a", aspect_ratio=None)
     st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
     
-    # Convertir l'image recadrée en bytes pour l'OCR
+    # Convertir la zone recadrée en bytes
     buf = io.BytesIO()
     cropped_img.save(buf, format="PNG")
     cropped_bytes = buf.getvalue()
     
-    # -----------------------------------------------------------
-    # Extraction OCR sur la zone recadrée
-    # -----------------------------------------------------------
+    # Extraction OCR
     with st.spinner("Extraction du texte via OCR..."):
         ocr_results = ocr_reader.readtext(cropped_bytes)
     extracted_text = " ".join([res[1] for res in ocr_results])
     st.markdown("**Texte extrait :**")
     st.write(extracted_text)
     
-    # -----------------------------------------------------------
-    # Séparation manuelle : l'opérateur doit placer un numéro par ligne
-    # -----------------------------------------------------------
-    st.subheader("Séparez les numéros (un par ligne)")
-    manual_text = st.text_area("Un numéro par ligne :", value=extracted_text, height=150)
-    
-    # Ici, nous faisons un split par retour à la ligne
+    # Séparation manuelle des numéros (chacun sur une ligne)
+    st.subheader("Séparez vos numéros de série (un par ligne)")
+    manual_text = st.text_area("Entrez chaque numéro sur une nouvelle ligne :", value=extracted_text, height=150)
     lines = [l.strip() for l in manual_text.split('\n') if l.strip()]
     
-    # -----------------------------------------------------------
-    # Génération des codes‑barres multiples
-    # -----------------------------------------------------------
+    # Génération de codes‑barres multiples
     if st.button("Générer les codes‑barres"):
         if lines:
             st.write("Codes‑barres générés :")
@@ -154,14 +157,12 @@ if uploaded_file:
             idx = 0
             for line in lines:
                 barcode_buffer = generate_barcode(line)
-                cols[idx].image(barcode_buffer, caption=f"{line}", use_column_width=True)
+                cols[idx].image(barcode_buffer, caption=f"{line}", use_container_width=True)
                 idx = (idx + 1) % 3
         else:
-            st.warning("Aucun numéro détecté ou séparé.")
+            st.warning("Aucun numéro trouvé.")
     
-    # -----------------------------------------------------------
     # Enregistrement du feedback
-    # -----------------------------------------------------------
     if st.button("Valider et Enregistrer le Feedback"):
         with st.spinner("Enregistrement du feedback..."):
             image_bytes = uploaded_file.getvalue()

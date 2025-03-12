@@ -5,3 +5,4 @@ pillow
 transformers
 torch
 streamlit-cropper
+fpdf

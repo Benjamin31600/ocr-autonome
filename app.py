@@ -9,33 +9,31 @@ import io
 import sqlite3
 import threading
 import time
+import os
+import tempfile
+from fpdf import FPDF
 
-# -----------------------------------------------------------
-# Fonction pour corriger l'orientation de l'image via EXIF
-# -----------------------------------------------------------
+# --- Fonction pour corriger l'orientation de l'image ---
 def correct_image_orientation(image):
     try:
         exif = image._getexif()
-        if exif is not None:
+        if exif:
             for tag, value in exif.items():
                 decoded = ExifTags.TAGS.get(tag, tag)
                 if decoded == "Orientation":
-                    orientation = value
-                    if orientation == 3:
+                    if value == 3:
                         image = image.rotate(180, expand=True)
-                    elif orientation == 6:
+                    elif value == 6:
                         image = image.rotate(270, expand=True)
-                    elif orientation == 8:
+                    elif value == 8:
                         image = image.rotate(90, expand=True)
                     break
     except Exception as e:
         st.warning(f"Erreur d'orientation : {e}")
     return image
 
-# -----------------------------------------------------------
-# Configuration de la page et Style
-# -----------------------------------------------------------
-st.set_page_config(page_title="Daher – Multi Code-barres (Industriel)", page_icon="✈️", layout="wide")
+# --- Configuration de la page ---
+st.set_page_config(page_title="Daher – OCR Multi Code‑barres & PDF", page_icon="✈️", layout="wide")
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
@@ -43,8 +41,7 @@ st.markdown("""
         background: linear-gradient(135deg, #0d1b2a, #1b263b);
         font-family: 'Poppins', sans-serif;
         color: #ffffff;
-        margin: 0;
-        padding: 0;
+        margin: 0; padding: 0;
     }
     [data-testid="stAppViewContainer"] {
         background: rgba(255,255,255,0.92);
@@ -73,35 +70,29 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – OCR Multi Code‑barres")
-st.write("Téléchargez une image, sélectionnez la zone avec la souris, et laissez l'OCR extraire le texte. Corrigez les numéros de série en les séparant par ligne pour générer un code‑barres par numéro.")
+st.title("Daher Aerospace – OCR Multi Code‑barres & PDF")
+st.write("Téléversez une image, sélectionnez la zone d'intérêt, laissez l'OCR extraire le texte, puis séparez manuellement les numéros (un par ligne). Un code‑barres sera généré pour chaque numéro validé, et vous pourrez créer un PDF rassemblant tous ces codes‑barres.")
 
-# -----------------------------------------------------------
-# Connexion à la base SQLite
-# -----------------------------------------------------------
+# --- Connexion à la base SQLite ---
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
 c = conn.cursor()
 c.execute("""
-    CREATE TABLE IF NOT EXISTS feedback (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        image BLOB,
-        ocr_text TEXT,
-        validated_fields TEXT
-    )
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    image BLOB,
+    ocr_text TEXT,
+    validated_fields TEXT
+)
 """)
 conn.commit()
 
-# -----------------------------------------------------------
-# Charger EasyOCR
-# -----------------------------------------------------------
+# --- Charger EasyOCR ---
 @st.cache_resource
 def load_ocr_model():
     return easyocr.Reader(['fr', 'en'])
 ocr_reader = load_ocr_model()
 
-# -----------------------------------------------------------
-# Génération de code‑barres
-# -----------------------------------------------------------
+# --- Fonction pour générer un code‑barres (Code128) ---
 @st.cache_data(show_spinner=False)
 def generate_barcode(sn):
     CODE128 = barcode.get_barcode_class('code128')
@@ -111,23 +102,19 @@ def generate_barcode(sn):
     buffer.seek(0)
     return buffer
 
-# -----------------------------------------------------------
-# Téléversement de l'image
-# -----------------------------------------------------------
+# --- Téléversement de l'image ---
 uploaded_file = st.file_uploader("Téléchargez une image (png, jpg, jpeg)", type=["png", "jpg", "jpeg"])
-
 if uploaded_file:
     start_time = time.time()
     
-    # Ouvrir et corriger l'orientation de l'image
+    # Ouvrir l'image et corriger l'orientation
     image = Image.open(uploaded_file)
     image = correct_image_orientation(image)
-    
-    # Réduire la résolution pour éviter des plantages
+    # Réduire la résolution pour éviter les plantages (ex : 1500x1500 max)
     image.thumbnail((1500, 1500))
     st.image(image, caption="Image originale (redimensionnée)", use_container_width=True)
     
-    # Sélection de la zone via st_cropper
+    # --- Sélection interactive de la zone (avec st_cropper) ---
     st.write("Sélectionnez la zone contenant les numéros (dessinez une boîte avec la souris) :")
     cropped_img = st_cropper(image, realtime_update=True, box_color="#0d1b2a", aspect_ratio=None)
     st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
@@ -137,32 +124,61 @@ if uploaded_file:
     cropped_img.save(buf, format="PNG")
     cropped_bytes = buf.getvalue()
     
-    # Extraction OCR
+    # --- Extraction OCR sur la zone recadrée ---
     with st.spinner("Extraction du texte via OCR..."):
         ocr_results = ocr_reader.readtext(cropped_bytes)
     extracted_text = " ".join([res[1] for res in ocr_results])
     st.markdown("**Texte extrait :**")
     st.write(extracted_text)
     
-    # Séparation manuelle des numéros (chacun sur une ligne)
-    st.subheader("Séparez vos numéros de série (un par ligne)")
-    manual_text = st.text_area("Entrez chaque numéro sur une nouvelle ligne :", value=extracted_text, height=150)
+    # --- Séparation manuelle pour obtenir un numéro par ligne ---
+    st.subheader("Séparez les numéros (un par ligne)")
+    manual_text = st.text_area("Modifiez ou séparez le texte pour obtenir un numéro par ligne :", value=extracted_text, height=150)
+    # On se base sur les retours à la ligne pour séparer
     lines = [l.strip() for l in manual_text.split('\n') if l.strip()]
     
-    # Génération de codes‑barres multiples
+    # --- Génération des codes‑barres multiples ---
     if st.button("Générer les codes‑barres"):
         if lines:
             st.write("Codes‑barres générés :")
+            # Affichage en grille 3 colonnes
             cols = st.columns(3)
             idx = 0
             for line in lines:
                 barcode_buffer = generate_barcode(line)
-                cols[idx].image(barcode_buffer, caption=f"{line}", use_container_width=True)
+                cols[idx].image(barcode_buffer, caption=f"{line}", use_column_width=True)
                 idx = (idx + 1) % 3
         else:
-            st.warning("Aucun numéro trouvé.")
+            st.warning("Aucun numéro séparé.")
     
-    # Enregistrement du feedback
+    # --- Génération d'un PDF des codes‑barres ---
+    if st.button("Générer PDF des codes‑barres"):
+        if lines:
+            # Créer un PDF et ajouter chaque code‑barres sur une page
+            pdf = FPDF()
+            pdf.set_auto_page_break(0, margin=10)
+            temp_dir = tempfile.gettempdir()
+            image_files = []
+            for line in lines:
+                barcode_buffer = generate_barcode(line)
+                # Sauvegarder temporairement l'image
+                file_name = f"barcode_{line.replace(' ', '_')}.png"
+                image_path = os.path.join(temp_dir, file_name)
+                with open(image_path, "wb") as f:
+                    f.write(barcode_buffer.getvalue())
+                image_files.append(image_path)
+                pdf.add_page()
+                # Ajouter l'image au PDF
+                pdf.image(image_path, x=10, y=10, w=pdf.w - 20)
+            pdf_path = os.path.join(temp_dir, "barcodes.pdf")
+            pdf.output(pdf_path, "F")
+            with open(pdf_path, "rb") as f:
+                pdf_data = f.read()
+            st.download_button("Télécharger le PDF des codes‑barres", data=pdf_data, file_name="barcodes.pdf", mime="application/pdf")
+        else:
+            st.warning("Aucun numéro validé pour le PDF.")
+    
+    # --- Enregistrement du feedback ---
     if st.button("Valider et Enregistrer le Feedback"):
         with st.spinner("Enregistrement du feedback..."):
             image_bytes = uploaded_file.getvalue()

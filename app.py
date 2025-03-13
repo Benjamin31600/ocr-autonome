@@ -13,21 +13,18 @@ import os
 import tempfile
 from fpdf import FPDF
 
-# --- Fonction pour corriger l'orientation de l'image via EXIF ---
+# --- Fonction pour corriger l'orientation de l'image ---
 def correct_image_orientation(image):
     try:
         exif = image._getexif()
         if exif:
-            for tag, value in exif.items():
-                decoded = ExifTags.TAGS.get(tag, tag)
-                if decoded == "Orientation":
-                    if value == 3:
-                        image = image.rotate(180, expand=True)
-                    elif value == 6:
-                        image = image.rotate(270, expand=True)
-                    elif value == 8:
-                        image = image.rotate(90, expand=True)
-                    break
+            orientation = exif.get(274)
+            if orientation == 3:
+                image = image.rotate(180, expand=True)
+            elif orientation == 6:
+                image = image.rotate(270, expand=True)
+            elif orientation == 8:
+                image = image.rotate(90, expand=True)
     except Exception as e:
         st.warning(f"Erreur d'orientation : {e}")
     return image
@@ -71,8 +68,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – OCR Multi Page & Code‑barres")
-st.write("Téléversez toutes les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt avec la souris (le cadre sera rouge), vérifiez le texte extrait, séparez les numéros (un par ligne) et générez un code‑barres par numéro. Vous pouvez aussi créer un PDF regroupant tous les codes‑barres.")
+st.title("Daher Aerospace – Multi Page OCR & Code‑barres")
+st.write("Téléversez toutes les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (le cadre de sélection apparaît en rouge), vérifiez le texte extrait et séparez manuellement les numéros (un par ligne). Vous pouvez ensuite générer un code‑barres par numéro et créer un PDF regroupant tous les codes‑barres.")
 
 # --- Connexion à la base SQLite ---
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
@@ -108,17 +105,20 @@ uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg
 
 if uploaded_files:
     overall_start = time.time()
-    all_validated_serials = []  # Pour stocker les numéros validés de toutes les pages
+    all_validated_serials = []  # Liste globale pour tous les numéros validés
     st.write("### Traitement des pages")
+    
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
+            # Charger et corriger l'image
             image = Image.open(uploaded_file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
             st.image(image, caption="Image originale (redimensionnée)", use_container_width=True)
             
-            st.write("Sélectionnez la zone contenant les numéros (le cadre sera affiché en rouge) :")
+            st.write("Sélectionnez la zone contenant les numéros (le cadre s'affichera en rouge) :")
+            # Utilisation de st_cropper avec box_color rouge
             cropped_img = st_cropper(image, realtime_update=True, box_color="#FF0000", aspect_ratio=None, key=f"cropper_{i}")
             st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
             
@@ -132,11 +132,12 @@ if uploaded_files:
             st.markdown("**Texte extrait :**")
             st.write(extracted_text)
             
+            # Séparation manuelle des numéros
             st.subheader("Séparez les numéros (un par ligne)")
             manual_text = st.text_area("Entrez chaque numéro sur une nouvelle ligne :", value=extracted_text, height=150, key=f"manual_{i}")
             lines = [l.strip() for l in manual_text.split('\n') if l.strip()]
             
-            if st.button(f"Générer les codes‑barres pour la page {i+1}", key=f"gen_{i}"):
+            if st.button(f"Générer codes‑barres pour la page {i+1}", key=f"gen_{i}"):
                 if lines:
                     st.write("Codes‑barres générés pour cette page :")
                     cols = st.columns(3)
@@ -148,12 +149,12 @@ if uploaded_files:
                     all_validated_serials.extend(lines)
                 else:
                     st.warning("Aucun numéro séparé sur cette page.")
-            
             page_end = time.time()
             st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
     
-    # --- Option PDF : Génération d'un PDF regroupant tous les codes‑barres validés ---
+    # Option : Générer un PDF regroupant tous les codes‑barres validés
     if all_validated_serials and st.button("Générer PDF de tous les codes‑barres"):
+        st.write("Génération du PDF en cours...")
         pdf = FPDF()
         pdf.set_auto_page_break(0, margin=10)
         temp_dir = tempfile.gettempdir()
@@ -171,7 +172,7 @@ if uploaded_files:
             pdf_data = f.read()
         st.download_button("Télécharger le PDF des codes‑barres", data=pdf_data, file_name="barcodes.pdf", mime="application/pdf")
     
-    # --- Enregistrement global du feedback ---
+    # Enregistrement global du feedback
     if st.button("Valider et Enregistrer le Feedback global"):
         with st.spinner("Enregistrement du feedback..."):
             combined_text = ""
@@ -195,4 +196,5 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
+
 

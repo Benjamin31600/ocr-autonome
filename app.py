@@ -13,7 +13,7 @@ import os
 import tempfile
 from fpdf import FPDF
 
-# --- Fonction pour corriger l'orientation d'une image ---
+# --- Fonction pour corriger l'orientation de l'image via EXIF ---
 def correct_image_orientation(image):
     try:
         exif = image._getexif()
@@ -33,7 +33,7 @@ def correct_image_orientation(image):
     return image
 
 # --- Configuration de la page ---
-st.set_page_config(page_title="Daher – Multi Page OCR & Code-barres", page_icon="✈️", layout="wide")
+st.set_page_config(page_title="Daher – Multi Page OCR & Code‑barres", page_icon="✈️", layout="wide")
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
@@ -41,8 +41,7 @@ st.markdown("""
         background: linear-gradient(135deg, #0d1b2a, #1b263b);
         font-family: 'Poppins', sans-serif;
         color: #ffffff;
-        margin: 0;
-        padding: 0;
+        margin: 0; padding: 0;
     }
     [data-testid="stAppViewContainer"] {
         background: rgba(255,255,255,0.92);
@@ -71,8 +70,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – OCR Multi Page & Code-barres")
-st.write("Téléversez plusieurs pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt, vérifiez le texte extrait, séparez les numéros (un par ligne) et générez un code‑barres par numéro. Vous pouvez ensuite assembler tous les codes‑barres dans un PDF.")
+st.title("Daher Aerospace – Multi Page OCR & Code‑barres")
+st.write("Téléversez plusieurs pages de votre BL. Pour chaque page, sélectionnez la zone d'intérêt avec la souris (le carré de sélection est affiché en rouge), vérifiez le texte extrait, séparez les numéros (un par ligne) et générez un code‑barres pour chaque numéro validé.")
 
 # --- Connexion à la base SQLite ---
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
@@ -109,7 +108,8 @@ uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg
 if uploaded_files:
     overall_start = time.time()
     all_validated_serials = []
-    # Utiliser un expander pour chaque page
+    st.write("### Traitement des pages")
+    # Traiter chaque page dans un expander pour plus d'ergonomie
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}"):
             page_start = time.time()
@@ -118,27 +118,26 @@ if uploaded_files:
             image.thumbnail((1500, 1500))
             st.image(image, caption="Image originale (redimensionnée)", use_container_width=True)
             
-            st.write("Sélectionnez la zone contenant les numéros (dessinez une boîte avec la souris) :")
-            cropped_img = st_cropper(image, realtime_update=True, box_color="#0d1b2a", aspect_ratio=None)
+            st.write("Sélectionnez la zone contenant les numéros (le cadre de sélection est en rouge) :")
+            # Ici, on définit box_color en rouge pour plus de visibilité
+            cropped_img = st_cropper(image, realtime_update=True, box_color="#FF0000", aspect_ratio=None, key=f"cropper_{i}")
             st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
             
             buf = io.BytesIO()
             cropped_img.save(buf, format="PNG")
             cropped_bytes = buf.getvalue()
             
-            with st.spinner("Extraction OCR..."):
+            with st.spinner("Extraction du texte via OCR..."):
                 ocr_results = ocr_reader.readtext(cropped_bytes)
             extracted_text = " ".join([res[1] for res in ocr_results])
             st.markdown("**Texte extrait :**")
             st.write(extracted_text)
             
-            # L'opérateur sépare manuellement (un numéro par ligne)
             st.subheader("Séparez les numéros (un par ligne)")
-            manual_text = st.text_area("Un numéro par ligne :", value=extracted_text, height=150, key=f"page_{i}_manual")
+            manual_text = st.text_area("Un numéro par ligne :", value=extracted_text, height=150, key=f"manual_{i}")
             lines = [l.strip() for l in manual_text.split('\n') if l.strip()]
             
-            # Affichage rapide des codes‑barres pour cette page
-            if st.button("Générer codes‑barres pour cette page", key=f"gen_{i}"):
+            if st.button(f"Générer codes‑barres pour la page {i+1}", key=f"gen_{i}"):
                 if lines:
                     st.write("Codes‑barres générés :")
                     cols = st.columns(3)
@@ -147,15 +146,13 @@ if uploaded_files:
                         barcode_buffer = generate_barcode(line)
                         cols[idx].image(barcode_buffer, caption=f"{line}", use_container_width=True)
                         idx = (idx + 1) % 3
-                    # Conserver pour enregistrement global
                     all_validated_serials.extend(lines)
                 else:
-                    st.warning("Aucun numéro trouvé sur cette page.")
-            
+                    st.warning("Aucun numéro séparé sur cette page.")
             page_end = time.time()
             st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
     
-    # Option pour assembler tous les codes‑barres en un PDF
+    # --- Option d'assemblage en PDF de tous les codes‑barres ---
     if all_validated_serials and st.button("Générer PDF de tous les codes‑barres"):
         pdf = FPDF()
         pdf.set_auto_page_break(0, margin=10)
@@ -174,13 +171,13 @@ if uploaded_files:
             pdf_data = f.read()
         st.download_button("Télécharger le PDF des codes‑barres", data=pdf_data, file_name="barcodes.pdf", mime="application/pdf")
     
-    # Enregistrement global du feedback (toutes pages)
+    # --- Enregistrement global du feedback ---
     if st.button("Valider et Enregistrer le Feedback global"):
         with st.spinner("Enregistrement du feedback..."):
-            # On peut par exemple combiner tous les textes OCR et tous les numéros validés
+            # On peut, par exemple, combiner le texte OCR de toutes les pages et tous les numéros validés
             combined_text = ""
             for file in uploaded_files:
-                combined_text += f"\n---\n"
+                combined_text += "\n---\n"
                 image = Image.open(file)
                 image = correct_image_orientation(image)
                 image.thumbnail((1500, 1500))

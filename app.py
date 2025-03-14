@@ -13,7 +13,7 @@ import os
 import tempfile
 from fpdf import FPDF
 
-# --- Fonction pour corriger l'orientation d'une image via EXIF ---
+# --- Fonction pour corriger l'orientation de l'image via EXIF ---
 def correct_image_orientation(image):
     try:
         exif = image._getexif()
@@ -29,11 +29,10 @@ def correct_image_orientation(image):
         st.warning(f"Erreur d'orientation : {e}")
     return image
 
-# --- Fonction pour générer un code‑barres avec python‑barcode ---
+# --- Fonction pour générer un code‑barres avec python‑barcode (sans add_checksum) ---
 def generate_barcode_pybarcode(sn):
     CODE128 = barcode.get_barcode_class('code128')
-    # Désactive l'ajout du checksum pour préserver le contenu exact
-    barcode_obj = CODE128(sn, writer=ImageWriter(), add_checksum=False)
+    barcode_obj = CODE128(sn, writer=ImageWriter())  # Paramètre add_checksum supprimé
     buffer = io.BytesIO()
     barcode_obj.write(buffer)
     buffer.seek(0)
@@ -79,7 +78,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR Multi Page & Code‑barres")
-st.write("Téléversez toutes les pages de votre BL. Pour chaque page, sélectionnez la zone d'intérêt (le cadre sera affiché en rouge), vérifiez le texte extrait, et séparez manuellement les numéros (un par ligne). Ensuite, confirmez chaque numéro pour générer un code‑barres. Vous pourrez ensuite créer un PDF regroupant tous les codes‑barres.")
+st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (le cadre sera affiché en rouge), vérifiez le texte extrait, et séparez les numéros (un par ligne). Ensuite, générez un code‑barres pour chaque numéro et créez un PDF regroupant tous les codes‑barres.")
 
 # --- Connexion à la base SQLite ---
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
@@ -107,7 +106,7 @@ uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg
 
 if uploaded_files:
     overall_start = time.time()
-    all_validated_serials = []  # Liste globale pour stocker tous les numéros validés
+    all_validated_serials = []  # Liste globale pour stocker les numéros validés de toutes les pages
     st.write("### Traitement des pages")
     
     for i, uploaded_file in enumerate(uploaded_files):
@@ -132,37 +131,23 @@ if uploaded_files:
             st.markdown("**Texte extrait :**")
             st.write(extracted_text)
             
-            # --- Séparation manuelle des numéros ---
             st.subheader("Séparez les numéros (un par ligne)")
             manual_text = st.text_area("Entrez chaque numéro sur une nouvelle ligne :", value=extracted_text, height=150, key=f"manual_{i}")
-            # Nettoyage : on supprime les espaces superflus en début et fin et on réduit les espaces multiples internes à un seul espace
+            # Nettoyage : suppression des espaces superflus en début et fin et réduction des espaces multiples internes
             lines = [" ".join(l.split()) for l in manual_text.split('\n') if l.strip()]
             
-            # --- Vérification de conformité par l'opérateur ---
-            st.subheader("Vérification des numéros")
-            confirmed_lines = []
-            for idx, line in enumerate(lines):
-                col1, col2 = st.columns([4,1])
-                with col1:
-                    current_line = st.text_input(f"Numéro {idx+1}", value=line, key=f"num_{i}_{idx}")
-                with col2:
-                    valid = st.checkbox("Confirmer", key=f"check_{i}_{idx}")
-                if valid:
-                    confirmed_lines.append(current_line)
-            
             if st.button(f"Générer les codes‑barres pour la page {i+1}", key=f"gen_{i}"):
-                if confirmed_lines:
+                if lines:
                     st.write("Codes‑barres générés pour cette page :")
                     cols = st.columns(3)
                     idx = 0
-                    for number in confirmed_lines:
-                        # Génération du code-barres avec python-barcode en désactivant le checksum pour préserver les chiffres
-                        barcode_buffer = generate_barcode_pybarcode(number)
-                        cols[idx].image(barcode_buffer, caption=f"{number}", use_container_width=True)
+                    for line in lines:
+                        barcode_buffer = generate_barcode_pybarcode(line)
+                        cols[idx].image(barcode_buffer, caption=f"{line}", use_container_width=True)
                         idx = (idx + 1) % 3
-                    all_validated_serials.extend(confirmed_lines)
+                    all_validated_serials.extend(lines)
                 else:
-                    st.warning("Aucun numéro confirmé sur cette page.")
+                    st.warning("Aucun numéro séparé sur cette page.")
             page_end = time.time()
             st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
     
@@ -218,4 +203,3 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
-

@@ -1,7 +1,6 @@
 import streamlit as st
 from streamlit_cropper import st_cropper
 import easyocr
-import re
 import barcode
 from barcode.writer import ImageWriter
 from PIL import Image, ExifTags
@@ -13,7 +12,7 @@ import os
 import tempfile
 from fpdf import FPDF
 
-# --- Fonction pour corriger l'orientation de l'image ---
+# --- Fonction pour corriger l'orientation de l'image via EXIF ---
 def correct_image_orientation(image):
     try:
         exif = image._getexif()
@@ -38,8 +37,8 @@ def generate_barcode_pybarcode(sn):
     buffer.seek(0)
     return buffer
 
-# --- Configuration de la page et CSS moderne ---
-st.set_page_config(page_title="Daher – OCR & Code‑barres Ultra Sécurisé", page_icon="✈️", layout="wide")
+# --- Configuration de la page et styles modernes ---
+st.set_page_config(page_title="Daher – OCR & Code‑barres Sécurisé", page_icon="✈️", layout="wide")
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
@@ -96,11 +95,17 @@ st.markdown("""
         color: #000;
         text-align: center;
     }
+    .low-confidence {
+        background-color: rgba(255, 200, 200, 0.6);
+        border: 2px solid #FF0000;
+        padding: 4px;
+        border-radius: 4px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez le texte extrait, séparez les numéros (un par ligne) et assurez-vous de CONFIRMER chaque numéro (saisissez 'OK' dans le champ de validation). Seuls les numéros confirmés seront utilisés pour générer les codes‑barres et le PDF.")
+st.title("Daher Aerospace – OCR & Code‑barres Sécurisé")
+st.write("Téléversez les pages de votre BL. Pour chaque page, sélectionnez la zone (cadre rouge), vérifiez le texte extrait et séparez les numéros (un par ligne). Vérifiez bien les numéros signalés à faible confiance (affichés en rouge) avant de confirmer en saisissant 'OK' dans le champ dédié. Seuls les numéros confirmés seront utilisés pour générer les codes‑barres et le PDF.")
 
 # --- Connexion à la base SQLite ---
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
@@ -123,12 +128,15 @@ ocr_reader = load_ocr_model()
 
 # --- Téléversement multiple de pages ---
 uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg, jpeg)", 
-                                    type=["png", "jpg", "jpeg"],
+                                    type=["png", "jpg", "jpeg"], 
                                     accept_multiple_files=True)
+
+# Seuil de confiance pour alerter
+confidence_threshold = 0.80
 
 if uploaded_files:
     overall_start = time.time()
-    all_validated_serials = []  # Liste globale pour stocker tous les numéros confirmés
+    all_validated_serials = []  # Liste globale pour stocker les numéros confirmés
     st.write("### Traitement des pages")
     
     for i, uploaded_file in enumerate(uploaded_files):
@@ -139,7 +147,7 @@ if uploaded_files:
             image.thumbnail((1500, 1500))
             st.image(image, caption="Image originale (redimensionnée)", use_container_width=True)
             
-            st.write("Sélectionnez la zone contenant les numéros (le cadre sera affiché en rouge) :")
+            st.write("Sélectionnez la zone contenant les numéros (le cadre sera en rouge) :")
             cropped_img = st_cropper(image, realtime_update=True, box_color="#FF0000", aspect_ratio=None, key=f"cropper_{i}")
             st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
             
@@ -149,20 +157,26 @@ if uploaded_files:
             
             with st.spinner("Extraction OCR..."):
                 ocr_results = ocr_reader.readtext(cropped_bytes)
-            # Récupérer le texte et aussi les scores de confiance
-            extracted_text = ""
-            ocr_data = []
+            
+            # Afficher les détails OCR avec confiance
+            st.markdown("**Détails OCR (texte et score de confiance) :**")
+            ocr_details = []
             for result in ocr_results:
                 text = result[1]
-                confidence = result[2]
-                ocr_data.append((text, confidence))
-                extracted_text += text + " "
+                conf = result[2]
+                ocr_details.append(text)
+                if conf < confidence_threshold:
+                    st.markdown(f"<span class='low-confidence'>Alerte : '{text}' (Confiance: {conf:.2f})</span>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<span style='color:green;'>'{text}' (Confiance: {conf:.2f})</span>", unsafe_allow_html=True)
+            # Pré-remplir le champ de séparation avec le texte extrait complet
+            extracted_text = " ".join(ocr_details)
             st.markdown("**Texte extrait :**")
             st.write(extracted_text)
             
             st.subheader("Séparez les numéros (un par ligne)")
             manual_text = st.text_area("Un numéro par ligne :", value=extracted_text, height=150, key=f"manual_{i}")
-            # Nettoyage : supprimer espaces superflus et réduire espaces multiples
+            # Nettoyage : suppression des espaces en début/fin et réduction des espaces multiples
             lines = [" ".join(l.split()) for l in manual_text.split('\n') if l.strip()]
             
             st.subheader("Validation des numéros")
@@ -173,15 +187,14 @@ if uploaded_files:
                     with col1:
                         current_num = st.text_input(f"Numéro {idx+1}", value=num, key=f"num_{i}_{idx}")
                     with col2:
-                        # Ici, l'opérateur doit saisir "OK" pour confirmer
+                        # L'opérateur doit saisir "OK" pour confirmer
                         confirm = st.text_input(f"Confirmez ('OK')", value="", key=f"confirm_{i}_{idx}")
-                    # Si le texte saisi est "OK", on affiche une boîte verte ; sinon, rouge
                     if confirm.strip().upper() == "OK":
                         st.markdown(f'<div class="validation-box">Confirmé : {current_num}</div>', unsafe_allow_html=True)
                         confirmed_numbers.append(current_num)
                     else:
                         st.markdown(f'<div class="non-validation-box">Non confirmé : {current_num}</div>', unsafe_allow_html=True)
-                form_submitted = st.form_submit_button("Valider les numéros de cette page")
+                form_submitted = st.form_submit_button("Confirmer les numéros de cette page")
             
             if form_submitted:
                 if len(confirmed_numbers) == len(lines) and confirmed_numbers:
@@ -251,5 +264,6 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
+
 
 

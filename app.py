@@ -6,9 +6,35 @@ import barcode
 from barcode.writer import ImageWriter
 from PIL import Image, ExifTags
 import io
+import sqlite3
+import threading
+import time
 import os
 import tempfile
 from fpdf import FPDF
+
+# --- Paramètres de sécurité (ici, aucun superviseur requis) ---
+# Vous pouvez ajouter d'autres paramètres ici si besoin.
+
+# --- Liste des paires de confusion (caractères à risque) ---
+confusion_pairs = {
+    'S': '8',
+    '8': 'S',
+    'O': '0',
+    '0': 'O',
+    'I': '1',
+    '1': 'I',
+}
+
+# --- Fonction pour mettre en évidence les caractères à risque ---
+def highlight_confusions(num):
+    result_html = ""
+    for char in num:
+        if char in confusion_pairs or char in confusion_pairs.values():
+            result_html += f"<span style='color:red; font-weight:bold;'>{char}</span>"
+        else:
+            result_html += char
+    return result_html
 
 # --- Fonction pour corriger l'orientation de l'image via EXIF ---
 def correct_image_orientation(image):
@@ -34,25 +60,6 @@ def generate_barcode_pybarcode(sn):
     barcode_obj.write(buffer)
     buffer.seek(0)
     return buffer
-
-# --- Fonction pour mettre en évidence les caractères à risque ---
-confusion_pairs = {
-    'S': '8',
-    '8': 'S',
-    'O': '0',
-    '0': 'O',
-    'I': '1',
-    '1': 'I',
-    # Vous pouvez ajouter d'autres paires si nécessaire
-}
-def highlight_confusions(num):
-    result_html = ""
-    for char in num:
-        if char in confusion_pairs or char in confusion_pairs.values():
-            result_html += f"<span style='color:red; font-weight:bold;'>{char}</span>"
-        else:
-            result_html += char
-    return result_html
 
 # --- Configuration de la page et styles CSS ---
 st.set_page_config(page_title="Daher – OCR & Code‑barres Ultra Sécurisé", page_icon="✈️", layout="wide")
@@ -110,7 +117,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), comparez les résultats OCR d'EasyOCR et Tesseract, puis séparez et validez les numéros en un seul clic (checkbox). Les numéros suspects, identifiés par la mise en évidence des caractères à risque, seront clairement affichés. Seuls les numéros validés seront utilisés pour générer les codes‑barres et le PDF final.")
+st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), comparez les résultats OCR d'EasyOCR et Tesseract, puis séparez et validez les numéros par un simple clic. Les numéros suspects (avec confusions potentielles) sont surlignés pour vérification. Seuls les numéros validés seront utilisés pour générer les codes‑barres et le PDF final.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -123,11 +130,11 @@ uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg
                                     type=["png", "jpg", "jpeg"], 
                                     accept_multiple_files=True)
 
+overall_start = time.time()  # Cette ligne devrait fonctionner si 'time' est bien importé
+all_validated_serials = []
+
 if uploaded_files:
-    overall_start = time.time()
-    all_validated_serials = []  # Liste globale pour stocker les numéros validés
     st.write("### Traitement des pages")
-    
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
@@ -154,7 +161,6 @@ if uploaded_files:
             st.markdown("**Résultat OCR (Tesseract) :**")
             st.write(tess_text)
             
-            # Utiliser le résultat EasyOCR pour pré-remplir la validation
             extracted_text = " ".join([res[1] for res in ocr_results])
             st.markdown("**Texte utilisé pour validation :**")
             st.write(extracted_text)
@@ -169,33 +175,31 @@ if uploaded_files:
                 for idx, num in enumerate(lines):
                     cols = st.columns([5,2])
                     with cols[0]:
-                        # Affichage du numéro avec mise en évidence des caractères à risque
-                        highlighted = highlight_confusions(num)
-                        st.markdown(f"**Numéro {idx+1} :** {highlighted}", unsafe_allow_html=True)
+                        user_num = st.text_input(f"Numéro {idx+1}", value=num, key=f"num_{i}_{idx}")
+                        st.markdown(f"**Avec surbrillance :** {highlight_confusions(user_num)}", unsafe_allow_html=True)
                     with cols[1]:
                         valid = st.checkbox("Valider", key=f"check_{i}_{idx}")
                     if valid:
-                        st.markdown(f'<div class="validated">Confirmé : {num}</div>', unsafe_allow_html=True)
-                        confirmed_numbers.append(num)
+                        st.markdown(f'<div class="validated">Confirmé : {user_num}</div>', unsafe_allow_html=True)
+                        confirmed_numbers.append(user_num)
                     else:
-                        st.markdown(f'<div class="non-validated">Non validé : {num}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="non-validated">Non validé : {user_num}</div>', unsafe_allow_html=True)
                 form_submitted = st.form_submit_button("Confirmer tous les numéros de cette page")
             
             if form_submitted:
                 if len(confirmed_numbers) == len(lines) and confirmed_numbers:
                     st.success(f"Tous les numéros de la page {i+1} sont validés.")
                     st.write("Codes‑barres générés pour cette page :")
-                    barcode_cols = st.columns(3)
+                    cols = st.columns(3)
                     for idx, number in enumerate(confirmed_numbers):
                         barcode_buffer = generate_barcode_pybarcode(number)
-                        barcode_cols[idx % 3].image(barcode_buffer, caption=f"{number}", use_container_width=True)
+                        cols[idx % 3].image(barcode_buffer, caption=f"{number}", use_container_width=True)
                     all_validated_serials.extend(confirmed_numbers)
                 else:
-                    st.error("Veuillez valider TOUS les numéros de cette page.")
+                    st.error("Tous les numéros doivent être validés pour valider cette page.")
             page_end = time.time()
             st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
     
-    # --- Génération du PDF regroupant tous les codes‑barres validés ---
     if all_validated_serials and st.button("Générer PDF de tous les codes‑barres"):
         st.write("Génération du PDF en cours...")
         try:
@@ -225,6 +229,5 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
-
 
 

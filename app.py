@@ -37,7 +37,7 @@ def generate_barcode_pybarcode(sn):
     buffer.seek(0)
     return buffer
 
-# --- Configuration de la page et styles CSS ---
+# --- Configuration de la page et styles CSS modernes ---
 st.set_page_config(page_title="Daher – OCR & Code‑barres Ultra Sécurisé", page_icon="✈️", layout="wide")
 st.markdown("""
     <style>
@@ -103,7 +103,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez le texte extrait, et séparez les numéros (un par ligne). Pour chaque numéro, l'indice de confiance issu de l'OCR est affiché ; si le numéro est modifié manuellement, un avertissement indique que l'indice de confiance n'est plus applicable. Saisissez 'OK' dans le champ de confirmation pour valider. Seuls les numéros validés seront utilisés pour générer les codes‑barres et le PDF.")
+st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez le texte extrait, et séparez les numéros (un par ligne). Chaque numéro affiche son indice de confiance. Si l'opérateur modifie le numéro, un avertissement s'affiche. Cliquez simplement sur la case pour confirmer chaque numéro, sans devoir taper 'OK'. Seuls les numéros confirmés seront utilisés pour générer les codes‑barres et le PDF final.")
 
 # --- Connexion à la base SQLite ---
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
@@ -124,7 +124,7 @@ def load_ocr_model():
     return easyocr.Reader(['fr', 'en'])
 ocr_reader = load_ocr_model()
 
-# Seuil de confiance pour indiquer une faible fiabilité
+# Seuil de confiance pour signaler une faible fiabilité
 confidence_threshold = 0.80
 
 # --- Téléversement multiple de pages ---
@@ -134,19 +134,18 @@ uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg
 
 if uploaded_files:
     overall_start = time.time()
-    all_validated_serials = []  # Pour stocker tous les numéros validés
+    all_validated_serials = []  # Liste globale pour stocker tous les numéros validés
     st.write("### Traitement des pages")
     
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
-            # Charger l'image et la corriger
             image = Image.open(uploaded_file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
             st.image(image, caption="Image originale (redimensionnée)", use_container_width=True)
             
-            st.write("Sélectionnez la zone contenant les numéros (le cadre sera en rouge) :")
+            st.write("Sélectionnez la zone contenant les numéros (le cadre sera affiché en rouge) :")
             cropped_img = st_cropper(image, realtime_update=True, box_color="#FF0000", aspect_ratio=None, key=f"cropper_{i}")
             st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
             
@@ -156,7 +155,7 @@ if uploaded_files:
             
             with st.spinner("Extraction OCR..."):
                 ocr_results = ocr_reader.readtext(cropped_bytes)
-            # Stocker les textes et indices issus de l'OCR dans une liste
+            # On récupère à la fois le texte et l'indice de confiance pour chaque résultat
             ocr_items = [(res[1], res[2]) for res in ocr_results]
             extracted_text = " ".join([text for text, conf in ocr_items])
             st.markdown("**Texte extrait :**")
@@ -164,7 +163,7 @@ if uploaded_files:
             
             st.subheader("Séparez les numéros (un par ligne)")
             manual_text = st.text_area("Un numéro par ligne :", value=extracted_text, height=150, key=f"manual_{i}")
-            # Nettoyage : suppression des espaces superflus
+            # Nettoyage : supprimer les espaces superflus et réduire les espaces multiples
             lines = [" ".join(l.split()) for l in manual_text.split('\n') if l.strip()]
             
             st.subheader("Validation des numéros")
@@ -175,12 +174,12 @@ if uploaded_files:
                     with col1:
                         current_num = st.text_input(f"Numéro {idx+1}", value=num, key=f"num_{i}_{idx}")
                     with col2:
-                        # Affichage de l'indice de confiance de l'OCR (si disponible)
+                        # Affichage de l'indice de confiance s'il est disponible
                         if idx < len(ocr_items):
                             original_text, conf = ocr_items[idx]
-                            # Si l'opérateur a modifié le numéro, on avertit
+                            # Si le numéro a été modifié, avertir que l'indice n'est plus applicable
                             if current_num != original_text:
-                                st.markdown("<span class='low-confidence'>Numéro modifié – indice non valide</span>", unsafe_allow_html=True)
+                                st.markdown("<span class='low-confidence'>Modifié – vérifiez manuellement</span>", unsafe_allow_html=True)
                             else:
                                 if conf < confidence_threshold:
                                     st.markdown(f"<span class='low-confidence'>Confiance: {conf:.2f}</span>", unsafe_allow_html=True)
@@ -189,13 +188,15 @@ if uploaded_files:
                         else:
                             st.write("Confiance N/A")
                     with col3:
-                        confirm = st.text_input(f"Confirmez ('OK')", value="", key=f"confirm_{i}_{idx}")
-                    if confirm.strip().upper() == "OK":
+                        # Remplace le champ texte de confirmation par une simple case à cocher
+                        valid = st.checkbox("Confirmer", key=f"check_{i}_{idx}")
+                    # Affichage visuel de la validation
+                    if valid:
                         st.markdown(f'<div class="validation-box">Confirmé : {current_num}</div>', unsafe_allow_html=True)
                         confirmed_numbers.append(current_num)
                     else:
                         st.markdown(f'<div class="non-validation-box">Non confirmé : {current_num}</div>', unsafe_allow_html=True)
-                form_submitted = st.form_submit_button("Valider les numéros de cette page")
+                form_submitted = st.form_submit_button("Valider tous les numéros de cette page")
             
             if form_submitted:
                 if len(confirmed_numbers) == len(lines) and confirmed_numbers:
@@ -209,7 +210,7 @@ if uploaded_files:
                         idx = (idx + 1) % 3
                     all_validated_serials.extend(confirmed_numbers)
                 else:
-                    st.error("Veuillez saisir 'OK' pour CONFIRMER TOUS les numéros de cette page.")
+                    st.error("Tous les numéros doivent être confirmés pour valider cette page.")
             page_end = time.time()
             st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
     
@@ -265,5 +266,6 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
+
 
 

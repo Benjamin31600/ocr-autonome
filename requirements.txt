@@ -6,3 +6,4 @@ transformers
 torch
 streamlit-cropper
 fpdf
+treepoem

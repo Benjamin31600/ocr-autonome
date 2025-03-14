@@ -7,3 +7,4 @@ torch
 streamlit-cropper
 fpdf
 treepoem
+pytesseract

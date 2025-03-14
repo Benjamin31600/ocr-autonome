@@ -1,7 +1,6 @@
 import streamlit as st
 from streamlit_cropper import st_cropper
 import easyocr
-import re
 import barcode
 from barcode.writer import ImageWriter
 from PIL import Image, ExifTags
@@ -32,14 +31,14 @@ def correct_image_orientation(image):
 # --- Fonction pour générer un code‑barres (Code128) ---
 def generate_barcode_pybarcode(sn):
     CODE128 = barcode.get_barcode_class('code128')
-    barcode_obj = CODE128(sn, writer=ImageWriter())  # pas de add_checksum pour préserver les chiffres
+    barcode_obj = CODE128(sn, writer=ImageWriter())
     buffer = io.BytesIO()
     barcode_obj.write(buffer)
     buffer.seek(0)
     return buffer
 
-# --- Configuration de la page ---
-st.set_page_config(page_title="Daher – Multi Page OCR & Code‑barres", page_icon="✈️", layout="wide")
+# --- Configuration de la page et CSS ---
+st.set_page_config(page_title="Daher – OCR Multi Page & Code‑barres", page_icon="✈️", layout="wide")
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
@@ -74,7 +73,7 @@ st.markdown("""
         background-color: #415a77;
         transform: translateY(-3px);
     }
-    /* Style pour la validation */
+    /* Style pour le formulaire de validation */
     .validation-box {
         padding: 8px;
         margin: 4px 0;
@@ -85,11 +84,21 @@ st.markdown("""
         font-weight: 600;
         color: #000;
     }
+    .non-validation-box {
+        padding: 8px;
+        margin: 4px 0;
+        border: 2px solid #FF0000;
+        border-radius: 8px;
+        background-color: rgba(255,0,0,0.1);
+        font-size: 16px;
+        font-weight: 600;
+        color: #000;
+    }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR Multi Page & Code‑barres")
-st.write("Téléversez toutes les pages de votre BL. Pour chaque page, sélectionnez la zone d'intérêt (le cadre s'affichera en rouge), vérifiez le texte extrait, et séparez les numéros (un par ligne). Vous devez confirmer chaque numéro pour générer le code‑barres correspondant. Ensuite, vous pouvez créer un PDF regroupant tous les codes‑barres.")
+st.write("Téléversez toutes les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (le cadre sera affiché en rouge), vérifiez le texte extrait, séparez les numéros (un par ligne), et confirmez chaque numéro. Seuls les numéros confirmés seront utilisés pour générer les codes‑barres. Vous pouvez ensuite créer un PDF regroupant tous les codes‑barres.")
 
 # --- Connexion à la base SQLite ---
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
@@ -111,19 +120,19 @@ def load_ocr_model():
 ocr_reader = load_ocr_model()
 
 # --- Téléversement multiple de pages ---
-uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg, jpeg)",
+uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg, jpeg)", 
                                     type=["png", "jpg", "jpeg"],
                                     accept_multiple_files=True)
 
 if uploaded_files:
     overall_start = time.time()
-    all_validated_serials = []  # Liste globale pour stocker tous les numéros confirmés
+    all_validated_serials = []  # Liste globale pour stocker les numéros confirmés de toutes les pages
     st.write("### Traitement des pages")
     
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
-            # Charger, corriger et redimensionner l'image
+            # Charger l'image, corriger l'orientation et redimensionner
             image = Image.open(uploaded_file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
@@ -133,7 +142,6 @@ if uploaded_files:
             cropped_img = st_cropper(image, realtime_update=True, box_color="#FF0000", aspect_ratio=None, key=f"cropper_{i}")
             st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
             
-            # Conversion en bytes pour OCR
             buf = io.BytesIO()
             cropped_img.save(buf, format="PNG")
             cropped_bytes = buf.getvalue()
@@ -146,42 +154,41 @@ if uploaded_files:
             
             st.subheader("Séparez les numéros (un par ligne)")
             manual_text = st.text_area("Un numéro par ligne :", value=extracted_text, height=150, key=f"manual_{i}")
-            # Nettoyage : supprimer espaces superflus
+            # Nettoyage : supprimer espaces en début et fin et réduire les espaces multiples internes
             lines = [" ".join(l.split()) for l in manual_text.split('\n') if l.strip()]
             
             # --- Formulaire de validation pour cette page ---
             st.subheader("Validez chaque numéro")
             confirmed_numbers = []
             with st.form(key=f"validation_form_{i}"):
-                for idx, num in enumerate(lines):
+                for idx, number in enumerate(lines):
                     col1, col2 = st.columns([4,1])
                     with col1:
-                        current_num = st.text_input(f"Numéro {idx+1}", value=num, key=f"num_{i}_{idx}")
+                        current_num = st.text_input(f"Numéro {idx+1}", value=number, key=f"num_{i}_{idx}")
                     with col2:
                         is_valid = st.checkbox("Confirmer", key=f"check_{i}_{idx}")
-                    # On affiche un encadré pour une meilleure visibilité
+                    # Affichage visuel : vert si confirmé, rouge sinon
                     if is_valid:
                         st.markdown(f'<div class="validation-box">Confirmé : {current_num}</div>', unsafe_allow_html=True)
                     else:
-                        st.markdown(f'<div style="padding:8px; margin:4px 0; border:2px solid #FF0000; border-radius:8px; background-color:rgba(255,0,0,0.1); font-size:16px; font-weight:600; color:#000;">Non confirmé : {current_num}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="non-validation-box">Non confirmé : {current_num}</div>', unsafe_allow_html=True)
                     confirmed_numbers.append((current_num, is_valid))
-                form_submitted = st.form_submit_button("Confirmer les numéros de cette page")
+                form_submitted = st.form_submit_button("Valider les numéros de cette page")
             
             if form_submitted:
-                # Vérifier que tous les numéros sont confirmés
                 if all(valid for _, valid in confirmed_numbers):
-                    st.success(f"Tous les numéros de la page {i+1} ont été confirmés.")
+                    st.success(f"Tous les numéros de la page {i+1} sont confirmés.")
                     confirmed_page_numbers = [num for num, valid in confirmed_numbers]
                     st.write("Codes‑barres générés pour cette page :")
                     cols = st.columns(3)
                     idx = 0
-                    for number in confirmed_page_numbers:
-                        barcode_buffer = generate_barcode_pybarcode(number)
-                        cols[idx].image(barcode_buffer, caption=f"{number}", use_container_width=True)
+                    for num in confirmed_page_numbers:
+                        barcode_buffer = generate_barcode_pybarcode(num)
+                        cols[idx].image(barcode_buffer, caption=f"{num}", use_container_width=True)
                         idx = (idx + 1) % 3
                     all_validated_serials.extend(confirmed_page_numbers)
                 else:
-                    st.error("Veuillez confirmer TOUS les numéros de cette page avant de générer les codes‑barres.")
+                    st.error("Veuillez CONFIRMER TOUS les numéros avant de générer les codes‑barres.")
             page_end = time.time()
             st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
     
@@ -237,3 +244,4 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
+

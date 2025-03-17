@@ -12,16 +12,17 @@ from fpdf import FPDF
 import time
 
 # --- Paramètres ---
-CONFIDENCE_THRESHOLD = 0.99  # Si inférieur à 99%, nécessite double tap
+CONFIDENCE_THRESHOLD = 0.99  # Seuil en valeur (par exemple, 0.99 signifie 99%)
 
-# --- Fonction pour nettoyer un numéro (supprimer caractères spéciaux et S/N:) ---
+# --- Fonction pour nettoyer un numéro (supprime caractères spéciaux, S/N: etc.) ---
 def sanitize_number(num):
-    # Supprime S/N: avec ou sans espaces et d'autres caractères non alphanumériques
-    sanitized = re.sub(r'(?i)S\s*/\s*N\s*[:\-]?', '', num)
+    # Supprime le préfixe "S/N:" (insensible à la casse, avec ou sans espaces, virgule, etc.)
+    sanitized = re.sub(r'(?i)S\s*/\s*N\s*[:,\-]?', '', num)
+    # Conserve uniquement lettres et chiffres (supprime espaces et autres ponctuations)
     sanitized = re.sub(r'[^0-9A-Za-z]', '', sanitized)
     return sanitized
 
-# --- Liste de paires de confusion (pour surligner, optionnelle) ---
+# --- Liste de paires de confusion (optionnelle pour surligner) ---
 confusion_pairs = {
     'S': '8',
     '8': 'S',
@@ -129,7 +130,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les numéros (un par ligne) et validez-les via un double tap pour les segments avec indice de confiance < 99%. L'indice de confiance est affiché en pourcentage. Les numéros validés seront nettoyés automatiquement avant de générer les codes‑barres et assembler un PDF.")
+st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les numéros (un par ligne) et validez-les en retapant manuellement le segment si l'indice de confiance est inférieur à 99% (indiqué en pourcentage). Seuls les numéros validés seront nettoyés automatiquement avant de générer des codes‑barres et assembler un PDF téléchargeable.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -145,15 +146,12 @@ uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg
 overall_start = time.time()
 all_validated_serials = []
 
-# Initialisation de la validation double tap pour chaque segment dans la session
-if 'double_tap_counts' not in st.session_state:
-    st.session_state.double_tap_counts = {}
-
 if uploaded_files:
     st.write("### Traitement des pages")
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
+            # Charger, corriger et redimensionner l'image
             image = Image.open(uploaded_file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
@@ -177,52 +175,54 @@ if uploaded_files:
             st.subheader("Séparez et nettoyez les numéros (un par ligne)")
             manual_text = st.text_area("Chaque ligne doit contenir un numéro (les caractères spéciaux seront supprimés automatiquement) :", 
                                        value=extracted_text, height=150, key=f"manual_{i}")
-            # Séparation en lignes et nettoyage automatique
+            # Séparez en lignes et appliquez le nettoyage automatique
             lines = [sanitize_number(" ".join(l.split())) for l in manual_text.split('\n') if l.strip()]
             
             st.subheader("Validation des numéros")
-            validated_page = []  # pour stocker la validation de cette page
+            validated_page = []  # liste des numéros validés pour cette page
             for idx, num in enumerate(lines):
                 cols = st.columns([5,3])
                 with cols[0]:
                     highlighted = highlight_confusions(num)
                     st.markdown(f"**Segment {idx+1} :** {highlighted}", unsafe_allow_html=True)
                 with cols[1]:
-                    # Affichage de l'indice de confiance sous forme de pourcentage
+                    # Affichage de l'indice de confiance en pourcentage
                     if idx < len(confidence_list):
                         conf = confidence_list[idx]
                         conf_pct = conf * 100
                         if conf_pct < 99:
                             st.markdown(f"<span class='confidence-low'>Confiance: {conf_pct:.0f}%</span>", unsafe_allow_html=True)
+                            # Pour forcer la vérification, le champ est vide et l'opérateur doit retaper
+                            new_val = st.text_input("Retapez le numéro pour confirmer", value="", key=f"input_{i}_{idx}")
+                            if new_val.strip() == "":
+                                validated = False
+                                final_val = ""
+                            else:
+                                validated = True
+                                final_val = sanitize_number(new_val)
                         else:
                             st.markdown(f"<span class='confidence-high'>Confiance: {conf_pct:.0f}%</span>", unsafe_allow_html=True)
+                            # Auto-validation : pré-remplissage avec le numéro, possibilité de modification
+                            new_val = st.text_input("Confirmez ou modifiez le numéro", value=num, key=f"input_{i}_{idx}")
+                            if new_val.strip() == "":
+                                validated = False
+                                final_val = ""
+                            else:
+                                validated = True
+                                final_val = sanitize_number(new_val)
                     else:
                         st.write("Confiance N/A")
-                    
-                    # Mécanisme de double tap pour les segments avec faible confiance
-                    key_btn = f"double_{i}_{idx}"
-                    if key_btn not in st.session_state.double_tap_counts:
-                        st.session_state.double_tap_counts[key_btn] = 0
-                    if confidence_list and idx < len(confidence_list) and confidence_list[idx] * 100 < 99:
-                        if st.button("Double Tap pour valider", key=key_btn):
-                            st.session_state.double_tap_counts[key_btn] += 1
-                        st.write(f"Double Tap Count: {st.session_state.double_tap_counts[key_btn]}")
-                        if st.session_state.double_tap_counts[key_btn] >= 2:
-                            validated = True
-                        else:
-                            validated = False
-                    else:
-                        # Pour les segments avec confiance >= 99, validation automatique
                         validated = True
+                        final_val = num
                 if validated:
-                    st.markdown(f'<div class="validated">Confirmé : {num}</div>', unsafe_allow_html=True)
-                    validated_page.append(num)
+                    st.markdown(f'<div class="validated">Confirmé : {final_val}</div>', unsafe_allow_html=True)
+                    validated_page.append(final_val)
                 else:
                     st.markdown(f'<div class="non-validated">Non validé : {num}</div>', unsafe_allow_html=True)
-            # Bouton de confirmation de la page
             if st.button(f"Confirmer cette page", key=f"page_confirm_{i}"):
-                if len(validated_page) == len(lines):
+                if len(validated_page) == len(lines) and validated_page:
                     st.success(f"Tous les segments de la page {i+1} sont validés.")
+                    st.write("Codes‑barres générés pour cette page :")
                     barcode_cols = st.columns(3)
                     for idx, number in enumerate(validated_page):
                         barcode_buffer = generate_barcode_pybarcode(number)

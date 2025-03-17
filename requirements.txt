@@ -1,10 +1,11 @@
 streamlit
 easyocr
 python-barcode
-pillow
+Pillow
 transformers
 torch
 streamlit-cropper
 fpdf
 treepoem
 pytesseract
+

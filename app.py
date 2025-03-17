@@ -6,12 +6,21 @@ from barcode.writer import ImageWriter
 from PIL import Image, ExifTags
 import io
 import os
+import re
 import tempfile
 from fpdf import FPDF
 import time
 
-# --- Liste des paires de confusion fréquentes (pour surligner automatiquement) ---
-# Vous pouvez adapter ou étendre cette liste selon vos observations terrain.
+# --- Paramètres ---
+CONFIDENCE_THRESHOLD = 0.80  # Seuil pour l'indice de confiance
+
+# --- Fonction pour nettoyer un numéro (supprimer caractères spéciaux) ---
+def sanitize_number(num):
+    # Conserve uniquement les lettres et chiffres (supprime espaces et signes de ponctuation)
+    sanitized = re.sub(r'[^0-9A-Za-z]', '', num)
+    return sanitized
+
+# --- Fonction pour surligner les caractères à risque (optionnelle) ---
 confusion_pairs = {
     'S': '8',
     '8': 'S',
@@ -21,10 +30,9 @@ confusion_pairs = {
     '1': 'I',
 }
 
-# --- Fonction pour mettre en évidence les caractères à risque ---
-def highlight_confusions(num):
+def highlight_confusions(text):
     result_html = ""
-    for char in num:
+    for char in text:
         if char in confusion_pairs or char in confusion_pairs.values():
             result_html += f"<span style='color:red; font-weight:bold;'>{char}</span>"
         else:
@@ -49,14 +57,16 @@ def correct_image_orientation(image):
 
 # --- Fonction pour générer un code‑barres (Code128) ---
 def generate_barcode_pybarcode(sn):
+    # Nettoyer le numéro avant génération
+    sn_clean = sanitize_number(sn)
     CODE128 = barcode.get_barcode_class('code128')
-    barcode_obj = CODE128(sn, writer=ImageWriter())
+    barcode_obj = CODE128(sn_clean, writer=ImageWriter())
     buffer = io.BytesIO()
     barcode_obj.write(buffer)
     buffer.seek(0)
     return buffer
 
-# --- Configuration de la page et styles CSS modernes ---
+# --- Configuration de la page et styles CSS ---
 st.set_page_config(page_title="Daher – OCR & Code‑barres Ultra Sécurisé", page_icon="✈️", layout="wide")
 st.markdown("""
     <style>
@@ -106,11 +116,19 @@ st.markdown("""
         background-color: rgba(255,0,0,0.1);
         margin-bottom: 4px;
     }
+    .confidence-low {
+        color: red;
+        font-weight: bold;
+    }
+    .confidence-high {
+        color: green;
+        font-weight: bold;
+    }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les numéros (un par ligne) et validez-les en cochant la case correspondante. Les numéros sont affichés avec les caractères à risque surlignés pour attirer votre attention. Seuls les numéros validés seront utilisés pour générer les codes‑barres et assembler le PDF final.")
+st.write("Téléversez les pages de votre bordereau. Sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les numéros (un par ligne) et validez-les en cochant la case correspondante. L'indice de confiance (issu d'EasyOCR) est affiché pour chaque segment : en vert si ≥ 0.80, en rouge sinon. Les numéros validés seront automatiquement nettoyés (sans espaces, virgules, /, ;, etc.) avant de générer les codes‑barres et assembler un PDF téléchargeable.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -124,14 +142,14 @@ uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg
                                     accept_multiple_files=True)
 
 overall_start = time.time()
-all_validated_serials = []  # Stockera tous les numéros validés
+all_validated_serials = []
 
 if uploaded_files:
     st.write("### Traitement des pages")
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
-            # Charger, corriger et redimensionner l'image
+            # Charger l'image, corriger l'orientation et redimensionner
             image = Image.open(uploaded_file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
@@ -141,20 +159,25 @@ if uploaded_files:
             cropped_img = st_cropper(image, realtime_update=True, box_color="#FF0000", aspect_ratio=None, key=f"cropper_{i}")
             st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
             
+            # Convertir l'image recadrée en bytes
             buf = io.BytesIO()
             cropped_img.save(buf, format="PNG")
             cropped_bytes = buf.getvalue()
             
-            with st.spinner("Extraction OCR..."):
+            with st.spinner("Extraction OCR avec EasyOCR..."):
                 ocr_results = ocr_reader.readtext(cropped_bytes)
+            # Extraction du texte et des indices de confiance
             extracted_text = " ".join([res[1] for res in ocr_results])
-            st.markdown("**Texte extrait :**")
+            confidence_list = [res[2] for res in ocr_results]
+            st.markdown("**Texte extrait (non nettoyé) :**")
             st.write(extracted_text)
             
-            st.subheader("Séparez les numéros (un par ligne)")
-            manual_text = st.text_area("Corrigez ou séparez les numéros :", value=extracted_text, height=150, key=f"manual_{i}")
-            # Séparation en lignes et nettoyage
-            lines = [" ".join(l.split()) for l in manual_text.split('\n') if l.strip()]
+            # Séparez et nettoyez le texte automatiquement
+            st.subheader("Séparez et nettoyez les numéros (un par ligne)")
+            manual_text = st.text_area("Chaque ligne doit contenir un numéro (les caractères spéciaux seront supprimés) :", 
+                                       value=extracted_text, height=150, key=f"manual_{i}")
+            # Séparez en lignes et appliquez le nettoyage à chaque ligne
+            lines = [sanitize_number(" ".join(l.split())) for l in manual_text.split('\n') if l.strip()]
             
             st.subheader("Validation des numéros")
             confirmed_numbers = []
@@ -162,10 +185,18 @@ if uploaded_files:
                 for idx, num in enumerate(lines):
                     cols = st.columns([5,2])
                     with cols[0]:
-                        # Affichage du numéro avec surbrillance des caractères à risque
                         highlighted = highlight_confusions(num)
                         st.markdown(f"**Numéro {idx+1} :** {highlighted}", unsafe_allow_html=True)
                     with cols[1]:
+                        # Afficher l'indice de confiance si disponible
+                        if idx < len(confidence_list):
+                            conf = confidence_list[idx]
+                            if conf < CONFIDENCE_THRESHOLD:
+                                st.markdown(f"<span class='confidence-low'>Confiance: {conf:.2f}</span>", unsafe_allow_html=True)
+                            else:
+                                st.markdown(f"<span class='confidence-high'>Confiance: {conf:.2f}</span>", unsafe_allow_html=True)
+                        else:
+                            st.write("Confiance N/A")
                         valid = st.checkbox("Valider", key=f"check_{i}_{idx}")
                     if valid:
                         st.markdown(f'<div class="validated">Confirmé : {num}</div>', unsafe_allow_html=True)
@@ -184,7 +215,7 @@ if uploaded_files:
                         barcode_cols[idx % 3].image(barcode_buffer, caption=f"{number}", use_container_width=True)
                     all_validated_serials.extend(confirmed_numbers)
                 else:
-                    st.error("Tous les numéros doivent être validés pour valider cette page.")
+                    st.error("Veuillez valider TOUS les numéros de cette page.")
             page_end = time.time()
             st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
     
@@ -198,7 +229,7 @@ if uploaded_files:
             for vsn in all_validated_serials:
                 st.write("Traitement du numéro :", vsn)
                 barcode_buffer = generate_barcode_pybarcode(vsn)
-                file_name = f"barcode_{vsn.replace(' ', '_')}.png"
+                file_name = f"barcode_{vsn}.png"
                 image_path = os.path.join(temp_dir, file_name)
                 with open(image_path, "wb") as f:
                     f.write(barcode_buffer.getvalue())
@@ -217,3 +248,4 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
+

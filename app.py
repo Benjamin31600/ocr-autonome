@@ -10,19 +10,20 @@ import re
 import tempfile
 from fpdf import FPDF
 import time
+from difflib import SequenceMatcher
 
 # --- Paramètres ---
-CONFIDENCE_THRESHOLD = 0.99  # 99% de confiance
+CONFIDENCE_THRESHOLD = 0.99  # Seuil de confiance à 99%
+SIMILARITY_THRESHOLD = 0.85  # Seuil de similarité pour auto-valider par rapport à l'historique
 
-# --- Fonction pour nettoyer un numéro (supprime caractères spéciaux, S/N: etc.) ---
+# --- Fonction pour nettoyer/sanitizer un numéro ---
 def sanitize_number(num):
-    # Supprime le préfixe "S/N:" (insensible à la casse, avec ou sans espaces, virgule, etc.)
+    # Supprime le préfixe "S/N:" (insensible à la casse, avec ou sans espaces, ponctuation) et tous les caractères non alphanumériques
     sanitized = re.sub(r'(?i)S\s*/\s*N\s*[:,\-]?', '', num)
-    # Supprime tous les caractères non alphanumériques (espaces, /, ;, etc.)
     sanitized = re.sub(r'[^0-9A-Za-z]', '', sanitized)
     return sanitized
 
-# --- Dictionnaire de substitutions classiques (pour générer des candidats) ---
+# --- Dictionnaire de paires de confusion (optionnel, pour surligner) ---
 confusion_pairs = {
     'S': '8',
     '8': 'S',
@@ -42,22 +43,9 @@ def highlight_confusions(text):
             result_html += char
     return result_html
 
-# --- Fonction pour générer des candidats de correction ---
-def generate_candidates(text):
-    candidates = set()
-    # Toujours inclure le résultat initial
-    candidates.add(text)
-    # Pour chaque caractère ambigu, générer une correction candidate en le substituant
-    for i, char in enumerate(text):
-        if char in confusion_pairs:
-            candidate = text[:i] + confusion_pairs[char] + text[i+1:]
-            candidates.add(candidate)
-        # Si char est dans les valeurs, essayez de trouver le(s) caractère(s) clé correspondant(s)
-        for k, v in confusion_pairs.items():
-            if char == v:
-                candidate = text[:i] + k + text[i+1:]
-                candidates.add(candidate)
-    return list(candidates)
+# --- Fonction pour comparer la similarité entre deux chaînes ---
+def similarity(a, b):
+    return SequenceMatcher(None, a, b).ratio()
 
 # --- Fonction pour corriger l'orientation de l'image via EXIF ---
 def correct_image_orientation(image):
@@ -147,7 +135,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les segments (un par ligne) et validez-les en choisissant une correction proposée pour les segments dont la confiance est inférieure à 99%. L'indice de confiance (issu d'EasyOCR) est affiché en pourcentage pour chaque segment. Seuls les segments validés seront nettoyés automatiquement avant de générer des codes‑barres et assembler un PDF téléchargeable.")
+st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les segments (un par ligne) et validez-les. L'indice de confiance (issu d'EasyOCR) est affiché en pourcentage pour chaque segment. Pour les segments avec une confiance inférieure à 99%, si le segment n'est pas suffisamment similaire aux segments déjà validés (historique), l'opérateur devra intervenir en retapant le segment. Seuls les segments validés seront nettoyés automatiquement avant de générer des codes‑barres et assembler un PDF téléchargeable.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -161,13 +149,14 @@ uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg
                                     accept_multiple_files=True)
 
 overall_start = time.time()
-all_validated_serials = []
+all_validated_serials = []  # Historique des segments validés
 
 if uploaded_files:
     st.write("### Traitement des pages")
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
+            # Charger l'image, corriger l'orientation et redimensionner
             image = Image.open(uploaded_file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
@@ -191,7 +180,7 @@ if uploaded_files:
             st.subheader("Séparez et nettoyez les segments (un par ligne)")
             manual_text = st.text_area("Chaque ligne doit contenir un segment (les caractères spéciaux seront supprimés automatiquement) :", 
                                        value=extracted_text, height=150, key=f"manual_{i}")
-            # Séparer en lignes et nettoyer
+            # Séparation en lignes et nettoyage
             lines = [sanitize_number(" ".join(l.split())) for l in manual_text.split('\n') if l.strip()]
             
             st.subheader("Validation des segments")
@@ -205,29 +194,38 @@ if uploaded_files:
                     if idx < len(confidence_list):
                         conf = confidence_list[idx]
                         conf_pct = conf * 100
-                        st.markdown(f"<span class='confidence-high'>Confiance: {conf_pct:.0f}%</span>" if conf_pct >= 99 else 
-                                    f"<span class='confidence-low'>Confiance: {conf_pct:.0f}%</span>", unsafe_allow_html=True)
                         if conf_pct < 99:
-                            # Générer des candidats de correction
-                            candidates = generate_candidates(num)
-                            # Si plusieurs candidats existent, proposer une sélection via un selectbox
-                            if len(candidates) > 1:
-                                selected = st.selectbox("Veuillez sélectionner la correction appropriée", options=candidates, key=f"select_{i}_{idx}")
-                                if selected == num:
-                                    st.error("Le segment doit être corrigé. Veuillez sélectionner une option différente du résultat initial.")
-                                    validated = False
-                                else:
-                                    validated = True
-                                    final_val = sanitize_number(selected)
+                            st.markdown(f"<span class='confidence-low'>Confiance: {conf_pct:.0f}%</span>", unsafe_allow_html=True)
+                            # Vérification par similarité avec historique :
+                            similar_found = False
+                            for prev in all_validated_serials:
+                                if similarity(num, prev) > SIMILARITY_THRESHOLD:
+                                    similar_found = True
+                                    break
+                            if similar_found:
+                                st.info("Segment similaire validé précédemment, auto-validation.")
+                                validated = True
+                                final_val = num
                             else:
-                                st.error("Aucune correction candidate n'est disponible. Veuillez corriger manuellement.")
+                                st.error("Segment nouveau ou douteux. Modification obligatoire.")
+                                # L'opérateur doit retaper le segment dans un champ de saisie obligatoire
+                                user_input = st.text_input("Retapez le segment corrigé:", value="", key=f"input_{i}_{idx}")
+                                if user_input.strip() and sanitize_number(user_input) != num:
+                                    validated = True
+                                    final_val = sanitize_number(user_input)
+                                else:
+                                    validated = False
+                                    final_val = ""
+                        else:
+                            st.markdown(f"<span class='confidence-high'>Confiance: {conf_pct:.0f}%</span>", unsafe_allow_html=True)
+                            # Auto-validation pour segments avec haute confiance, avec option de modification
+                            user_input = st.text_input("Confirmez ou modifiez le segment", value=num, key=f"input_{i}_{idx}")
+                            if user_input.strip():
+                                validated = True
+                                final_val = sanitize_number(user_input)
+                            else:
                                 validated = False
                                 final_val = ""
-                        else:
-                            # Pour les segments avec confiance élevée, permettre une confirmation via un selectbox avec l'option de modifier
-                            selected = st.selectbox("Confirmez ou modifiez le segment", options=[num] + generate_candidates(num), key=f"select_{i}_{idx}")
-                            validated = True
-                            final_val = sanitize_number(selected)
                     else:
                         st.write("Confiance N/A")
                         validated = True
@@ -280,19 +278,5 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
-    
-# --- Fonction pour générer des candidats de correction ---
-def generate_candidates(text):
-    # Génère des candidats en substituant les caractères ambiguës
-    candidates = set()
-    candidates.add(text)
-    for i, char in enumerate(text):
-        if char in confusion_pairs:
-            candidate = text[:i] + confusion_pairs[char] + text[i+1:]
-            candidates.add(candidate)
-        for k, v in confusion_pairs.items():
-            if char == v:
-                candidate = text[:i] + k + text[i+1:]
-                candidates.add(candidate)
-    return list(candidates)
+
 

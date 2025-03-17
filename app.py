@@ -12,15 +12,17 @@ from fpdf import FPDF
 import time
 
 # --- Paramètres ---
-CONFIDENCE_THRESHOLD = 0.80  # Seuil pour l'indice de confiance
+CONFIDENCE_THRESHOLD = 0.99  # Seuil à 99% pour validation automatique
 
-# --- Fonction pour nettoyer un numéro (supprimer caractères spéciaux) ---
+# --- Fonction pour nettoyer/sanitizer un numéro ---
 def sanitize_number(num):
-    # Conserve uniquement les lettres et chiffres (supprime espaces et signes de ponctuation)
-    sanitized = re.sub(r'[^0-9A-Za-z]', '', num)
+    # Supprime le préfixe "S/N:" (avec ou sans espaces, virgule ou :)
+    sanitized = re.sub(r'(?i)S\s*/\s*N\s*[:,\-]?', '', num)
+    # Supprime tous les caractères non alphanumériques (espaces, /, ;, etc.)
+    sanitized = re.sub(r'[^0-9A-Za-z]', '', sanitized)
     return sanitized
 
-# --- Fonction pour surligner les caractères à risque (optionnelle) ---
+# --- Liste de paires de confusion (pour surligner, facultatif) ---
 confusion_pairs = {
     'S': '8',
     '8': 'S',
@@ -30,6 +32,7 @@ confusion_pairs = {
     '1': 'I',
 }
 
+# --- Fonction pour surligner les caractères à risque ---
 def highlight_confusions(text):
     result_html = ""
     for char in text:
@@ -57,7 +60,6 @@ def correct_image_orientation(image):
 
 # --- Fonction pour générer un code‑barres (Code128) ---
 def generate_barcode_pybarcode(sn):
-    # Nettoyer le numéro avant génération
     sn_clean = sanitize_number(sn)
     CODE128 = barcode.get_barcode_class('code128')
     barcode_obj = CODE128(sn_clean, writer=ImageWriter())
@@ -128,7 +130,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les numéros (un par ligne) et validez-les en cochant la case correspondante. L'indice de confiance (issu d'EasyOCR) est affiché pour chaque segment : en vert si ≥ 0.80, en rouge sinon. Les numéros validés seront automatiquement nettoyés (sans espaces, virgules, /, ;, etc.) avant de générer les codes‑barres et assembler un PDF téléchargeable.")
+st.write("Téléversez les pages de votre bordereau. Sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les numéros (un par ligne) et validez-les. L'indice de confiance (issu d'EasyOCR) est affiché en pourcentage pour chaque segment. Si l'indice est inférieur à 99%, l'opérateur devra effectuer un double tap sur le segment pour le valider. Les numéros validés seront automatiquement nettoyés (suppression des espaces, /, ;, S/N: etc.) avant de générer les codes‑barres et assembler un PDF téléchargeable.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -149,7 +151,7 @@ if uploaded_files:
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
-            # Charger l'image, corriger l'orientation et redimensionner
+            # Charger, corriger l'image et la redimensionner
             image = Image.open(uploaded_file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
@@ -159,45 +161,56 @@ if uploaded_files:
             cropped_img = st_cropper(image, realtime_update=True, box_color="#FF0000", aspect_ratio=None, key=f"cropper_{i}")
             st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
             
-            # Convertir l'image recadrée en bytes
             buf = io.BytesIO()
             cropped_img.save(buf, format="PNG")
             cropped_bytes = buf.getvalue()
             
             with st.spinner("Extraction OCR avec EasyOCR..."):
                 ocr_results = ocr_reader.readtext(cropped_bytes)
-            # Extraction du texte et des indices de confiance
             extracted_text = " ".join([res[1] for res in ocr_results])
             confidence_list = [res[2] for res in ocr_results]
-            st.markdown("**Texte extrait (non nettoyé) :**")
+            st.markdown("**Texte extrait (avant nettoyage) :**")
             st.write(extracted_text)
             
-            # Séparez et nettoyez le texte automatiquement
             st.subheader("Séparez et nettoyez les numéros (un par ligne)")
-            manual_text = st.text_area("Chaque ligne doit contenir un numéro (les caractères spéciaux seront supprimés) :", 
+            manual_text = st.text_area("Chaque ligne doit contenir un numéro (les caractères spéciaux seront supprimés automatiquement) :", 
                                        value=extracted_text, height=150, key=f"manual_{i}")
-            # Séparez en lignes et appliquez le nettoyage à chaque ligne
+            # Séparez en lignes et nettoyez chaque ligne avec sanitize_number
             lines = [sanitize_number(" ".join(l.split())) for l in manual_text.split('\n') if l.strip()]
             
             st.subheader("Validation des numéros")
             confirmed_numbers = []
             with st.form(key=f"validation_form_{i}"):
                 for idx, num in enumerate(lines):
-                    cols = st.columns([5,2])
+                    cols = st.columns([5,3])
                     with cols[0]:
                         highlighted = highlight_confusions(num)
-                        st.markdown(f"**Numéro {idx+1} :** {highlighted}", unsafe_allow_html=True)
+                        st.markdown(f"**Segment {idx+1} :** {highlighted}", unsafe_allow_html=True)
                     with cols[1]:
-                        # Afficher l'indice de confiance si disponible
+                        # Afficher l'indice de confiance en pourcentage s'il est disponible
                         if idx < len(confidence_list):
                             conf = confidence_list[idx]
-                            if conf < CONFIDENCE_THRESHOLD:
-                                st.markdown(f"<span class='confidence-low'>Confiance: {conf:.2f}</span>", unsafe_allow_html=True)
+                            conf_pct = conf * 100
+                            if conf < 99:
+                                st.markdown(f"<span class='confidence-low'>Confiance: {conf_pct:.0f}% - Vérification requise</span>", unsafe_allow_html=True)
                             else:
-                                st.markdown(f"<span class='confidence-high'>Confiance: {conf:.2f}</span>", unsafe_allow_html=True)
+                                st.markdown(f"<span class='confidence-high'>Confiance: {conf_pct:.0f}%</span>", unsafe_allow_html=True)
                         else:
                             st.write("Confiance N/A")
-                        valid = st.checkbox("Valider", key=f"check_{i}_{idx}")
+                        # Pour les segments avec confiance < 99%, requérir un double tap
+                        key_button = f"confirm_{i}_{idx}"
+                        if idx < len(confidence_list) and confidence_list[idx] * 100 < 99:
+                            if key_button not in st.session_state:
+                                st.session_state[key_button] = 0
+                            if st.button("Double Tap pour valider", key=key_button):
+                                st.session_state[key_button] += 1
+                            if st.session_state[key_button] >= 2:
+                                valid = True
+                            else:
+                                valid = False
+                        else:
+                            # Auto validation pour confiance >= 99%
+                            valid = True
                     if valid:
                         st.markdown(f'<div class="validated">Confirmé : {num}</div>', unsafe_allow_html=True)
                         confirmed_numbers.append(num)
@@ -207,7 +220,7 @@ if uploaded_files:
             
             if form_submitted:
                 if len(confirmed_numbers) == len(lines) and confirmed_numbers:
-                    st.success(f"Tous les numéros de la page {i+1} sont validés.")
+                    st.success(f"Tous les segments de la page {i+1} sont validés.")
                     st.write("Codes‑barres générés pour cette page :")
                     barcode_cols = st.columns(3)
                     for idx, number in enumerate(confirmed_numbers):
@@ -215,7 +228,7 @@ if uploaded_files:
                         barcode_cols[idx % 3].image(barcode_buffer, caption=f"{number}", use_container_width=True)
                     all_validated_serials.extend(confirmed_numbers)
                 else:
-                    st.error("Veuillez valider TOUS les numéros de cette page.")
+                    st.error("Veuillez valider TOUS les segments de cette page.")
             page_end = time.time()
             st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
     
@@ -248,4 +261,5 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
+
 

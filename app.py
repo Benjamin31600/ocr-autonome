@@ -12,17 +12,17 @@ from fpdf import FPDF
 import time
 
 # --- Paramètres ---
-CONFIDENCE_THRESHOLD = 0.99  # Seuil en valeur (par exemple, 0.99 signifie 99%)
+CONFIDENCE_THRESHOLD = 0.99  # Seuil pour l'indice de confiance (99%)
 
-# --- Fonction pour nettoyer un numéro (supprime caractères spéciaux, S/N: etc.) ---
+# --- Fonction pour nettoyer/sanitizer un numéro ---
 def sanitize_number(num):
-    # Supprime le préfixe "S/N:" (insensible à la casse, avec ou sans espaces, virgule, etc.)
+    # Supprime le préfixe "S/N:" (insensible à la casse, avec ou sans espaces et ponctuation)
     sanitized = re.sub(r'(?i)S\s*/\s*N\s*[:,\-]?', '', num)
-    # Conserve uniquement lettres et chiffres (supprime espaces et autres ponctuations)
+    # Supprime tous les caractères non alphanumériques (espaces, /, ;, etc.)
     sanitized = re.sub(r'[^0-9A-Za-z]', '', sanitized)
     return sanitized
 
-# --- Liste de paires de confusion (optionnelle pour surligner) ---
+# --- Liste de paires de confusion (pour surligner, optionnelle) ---
 confusion_pairs = {
     'S': '8',
     '8': 'S',
@@ -130,7 +130,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les numéros (un par ligne) et validez-les en retapant manuellement le segment si l'indice de confiance est inférieur à 99% (indiqué en pourcentage). Seuls les numéros validés seront nettoyés automatiquement avant de générer des codes‑barres et assembler un PDF téléchargeable.")
+st.write("Téléversez les pages de votre bordereau. Sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les segments (un par ligne) et validez-les. L'indice de confiance (issu d'EasyOCR) est affiché en pourcentage pour chaque segment. Pour les segments dont la confiance est inférieure à 99%, vous ne pouvez pas valider sans modifier le texte. Seuls les segments validés seront nettoyés automatiquement avant de générer des codes‑barres et assembler un PDF téléchargeable.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -172,14 +172,14 @@ if uploaded_files:
             st.markdown("**Texte extrait (avant nettoyage) :**")
             st.write(extracted_text)
             
-            st.subheader("Séparez et nettoyez les numéros (un par ligne)")
-            manual_text = st.text_area("Chaque ligne doit contenir un numéro (les caractères spéciaux seront supprimés automatiquement) :", 
+            st.subheader("Séparez et nettoyez les segments (un par ligne)")
+            manual_text = st.text_area("Chaque ligne doit contenir un segment (les caractères spéciaux seront supprimés automatiquement) :", 
                                        value=extracted_text, height=150, key=f"manual_{i}")
-            # Séparez en lignes et appliquez le nettoyage automatique
+            # Séparation en lignes et nettoyage automatique
             lines = [sanitize_number(" ".join(l.split())) for l in manual_text.split('\n') if l.strip()]
             
-            st.subheader("Validation des numéros")
-            validated_page = []  # liste des numéros validés pour cette page
+            st.subheader("Validation des segments")
+            validated_page = []  # Liste des segments validés pour cette page
             for idx, num in enumerate(lines):
                 cols = st.columns([5,3])
                 with cols[0]:
@@ -192,24 +192,22 @@ if uploaded_files:
                         conf_pct = conf * 100
                         if conf_pct < 99:
                             st.markdown(f"<span class='confidence-low'>Confiance: {conf_pct:.0f}%</span>", unsafe_allow_html=True)
-                            # Pour forcer la vérification, le champ est vide et l'opérateur doit retaper
-                            new_val = st.text_input("Retapez le numéro pour confirmer", value="", key=f"input_{i}_{idx}")
-                            if new_val.strip() == "":
+                            # Pour forcer la vérification, le champ est pré-rempli mais DOIT être modifié par l'opérateur
+                            user_input = st.text_input("Veuillez CORRIGER ce segment (modifiez-le)", value=num, key=f"input_{i}_{idx}")
+                            if sanitize_number(user_input) == num:
                                 validated = False
-                                final_val = ""
+                                st.error("Le segment doit être modifié pour validation.")
                             else:
                                 validated = True
-                                final_val = sanitize_number(new_val)
+                                final_val = sanitize_number(user_input)
                         else:
                             st.markdown(f"<span class='confidence-high'>Confiance: {conf_pct:.0f}%</span>", unsafe_allow_html=True)
-                            # Auto-validation : pré-remplissage avec le numéro, possibilité de modification
-                            new_val = st.text_input("Confirmez ou modifiez le numéro", value=num, key=f"input_{i}_{idx}")
-                            if new_val.strip() == "":
+                            user_input = st.text_input("Confirmez ou modifiez le segment", value=num, key=f"input_{i}_{idx}")
+                            if user_input.strip() == "":
                                 validated = False
-                                final_val = ""
                             else:
                                 validated = True
-                                final_val = sanitize_number(new_val)
+                                final_val = sanitize_number(user_input)
                     else:
                         st.write("Confiance N/A")
                         validated = True
@@ -241,7 +239,7 @@ if uploaded_files:
             temp_dir = tempfile.gettempdir()
             st.write("Dossier temporaire utilisé :", temp_dir)
             for vsn in all_validated_serials:
-                st.write("Traitement du numéro :", vsn)
+                st.write("Traitement du segment :", vsn)
                 barcode_buffer = generate_barcode_pybarcode(vsn)
                 file_name = f"barcode_{vsn}.png"
                 image_path = os.path.join(temp_dir, file_name)
@@ -262,6 +260,5 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
-
 
 

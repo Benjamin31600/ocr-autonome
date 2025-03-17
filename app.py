@@ -10,13 +10,14 @@ import re
 import tempfile
 from fpdf import FPDF
 import time
+from difflib import SequenceMatcher
 
 # --- Paramètres ---
-CONFIDENCE_THRESHOLD = 0.99  # Seuil de confiance à 99%
+CONFIDENCE_THRESHOLD = 0.99  # 99% de confiance
 
 # --- Fonction pour nettoyer un numéro (supprime caractères spéciaux, S/N: etc.) ---
 def sanitize_number(num):
-    # Supprime "S/N:" (insensible à la casse, avec ou sans espaces/ponctuation)
+    # Supprime le préfixe "S/N:" (insensible à la casse, avec ou sans espaces, virgule, etc.)
     sanitized = re.sub(r'(?i)S\s*/\s*N\s*[:,\-]?', '', num)
     # Supprime tout caractère non alphanumérique
     sanitized = re.sub(r'[^0-9A-Za-z]', '', sanitized)
@@ -41,6 +42,21 @@ def highlight_confusions(text):
         else:
             result_html += char
     return result_html
+
+# --- Fonction pour générer des candidats de correction ---
+def generate_candidates(text):
+    # Génère des candidats en substituant les caractères ambiguës
+    candidates = set()
+    candidates.add(text)
+    for i, char in enumerate(text):
+        if char in confusion_pairs:
+            candidate = text[:i] + confusion_pairs[char] + text[i+1:]
+            candidates.add(candidate)
+        for k, v in confusion_pairs.items():
+            if char == v:
+                candidate = text[:i] + k + text[i+1:]
+                candidates.add(candidate)
+    return list(candidates)
 
 # --- Fonction pour corriger l'orientation de l'image via EXIF ---
 def correct_image_orientation(image):
@@ -130,7 +146,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les segments (un par ligne) et validez-les. L'indice de confiance est affiché sous forme de barre de progression et en pourcentage. Pour les segments dont la confiance est inférieure à 99%, vous devez obligatoirement modifier le texte (par exemple, en choisissant une correction dans une liste déroulante) pour confirmer. Seuls les segments validés seront nettoyés automatiquement avant de générer des codes‑barres et assembler un PDF téléchargeable.")
+st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les segments (un par ligne) et validez-les. L'indice de confiance (issu d'EasyOCR) est affiché en pourcentage sous forme de barre de progression. Si l'indice est inférieur à 99%, l'opérateur doit agir sur le champ de modification (il doit modifier le texte pré-rempli) pour valider le segment. Seuls les segments validés seront nettoyés automatiquement avant de générer des codes‑barres et assembler un PDF téléchargeable.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -143,11 +159,8 @@ uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg
                                     type=["png", "jpg", "jpeg"],
                                     accept_multiple_files=True)
 
-# Initialiser un dictionnaire dans la session pour stocker les segments validés
-if "validated_segments" not in st.session_state:
-    st.session_state.validated_segments = []
-
 overall_start = time.time()
+all_validated_serials = []
 
 if uploaded_files:
     st.write("### Traitement des pages")
@@ -178,7 +191,7 @@ if uploaded_files:
             st.subheader("Séparez et nettoyez les segments (un par ligne)")
             manual_text = st.text_area("Chaque ligne doit contenir un segment (les caractères spéciaux seront supprimés automatiquement) :", 
                                        value=extracted_text, height=150, key=f"manual_{i}")
-            # Séparation en lignes et nettoyage
+            # Séparation en lignes et nettoyage automatique
             lines = [sanitize_number(" ".join(l.split())) for l in manual_text.split('\n') if l.strip()]
             
             st.subheader("Validation des segments")
@@ -191,30 +204,23 @@ if uploaded_files:
                     st.progress(int(conf_pct))
                     st.markdown(f"Confiance : {conf_pct:.0f}%", unsafe_allow_html=True)
                     if conf_pct < 99:
-                        # Pour forcer une intervention, proposer une liste déroulante de candidats
-                        candidates = generate_candidates(num)
-                        # Filtrer pour exclure le résultat initial
-                        candidates = [c for c in candidates if c != num]
-                        if not candidates:
-                            st.error("Aucune correction candidate générée. Veuillez modifier manuellement.")
-                            user_choice = st.text_input("Retapez le segment corrigé :", value="", key=f"input_{i}_{idx}")
-                        else:
-                            user_choice = st.selectbox("Veuillez sélectionner la correction appropriée", options=candidates, key=f"select_{i}_{idx}")
-                        if user_choice.strip() == "":
-                            st.error("Vous devez choisir une correction.")
+                        # Pour forcer l'action, le champ de saisie est pré-rempli mais doit être modifié
+                        user_input = st.text_input("Modifiez ce segment pour validation", value=num, key=f"input_{i}_{idx}")
+                        if user_input.strip() == "" or sanitize_number(user_input) == num:
+                            st.error("Vous devez modifier ce segment.")
                             validated = False
                         else:
                             validated = True
-                            final_val = sanitize_number(user_choice)
+                            final_val = sanitize_number(user_input)
                     else:
-                        # Pour segments avec confiance élevée, permettre une confirmation simple
-                        user_choice = st.text_input("Confirmez ou modifiez le segment", value=num, key=f"input_{i}_{idx}")
-                        if user_choice.strip() == "":
-                            st.error("Champ vide.")
+                        # Pour segments avec confiance >= 99, on permet la confirmation ou modification
+                        user_input = st.text_input("Confirmez ou modifiez ce segment", value=num, key=f"input_{i}_{idx}")
+                        if user_input.strip() == "":
+                            st.error("Le champ ne peut pas être vide.")
                             validated = False
                         else:
                             validated = True
-                            final_val = sanitize_number(user_choice)
+                            final_val = sanitize_number(user_input)
                 else:
                     st.write("Confiance N/A")
                     validated = True
@@ -227,24 +233,25 @@ if uploaded_files:
             if st.button(f"Confirmer cette page", key=f"page_confirm_{i}"):
                 if len(validated_page) == len(lines) and validated_page:
                     st.success(f"Tous les segments de la page {i+1} sont validés.")
+                    st.write("Codes‑barres générés pour cette page :")
                     barcode_cols = st.columns(3)
                     for idx, segment in enumerate(validated_page):
                         barcode_buffer = generate_barcode_pybarcode(segment)
                         barcode_cols[idx % 3].image(barcode_buffer, caption=f"{segment}", use_container_width=True)
-                    st.session_state.validated_segments.extend(validated_page)
+                    all_validated_serials.extend(validated_page)
                 else:
                     st.error("Veuillez valider TOUS les segments de cette page.")
             page_end = time.time()
             st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
     
-    if st.button("Générer PDF de tous les codes‑barres"):
+    if all_validated_serials and st.button("Générer PDF de tous les codes‑barres"):
         st.write("Génération du PDF en cours...")
         try:
             pdf = FPDF()
             pdf.set_auto_page_break(0, margin=10)
             temp_dir = tempfile.gettempdir()
             st.write("Dossier temporaire utilisé :", temp_dir)
-            for segment in st.session_state.validated_segments:
+            for segment in all_validated_serials:
                 st.write("Traitement du segment :", segment)
                 barcode_buffer = generate_barcode_pybarcode(segment)
                 file_name = f"barcode_{segment}.png"
@@ -266,19 +273,3 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
-
-# --- Fonction pour générer des candidats de correction ---
-def generate_candidates(text):
-    # Génère des candidats en substituant les caractères ambigus
-    candidates = set()
-    candidates.add(text)
-    for i, char in enumerate(text):
-        if char in confusion_pairs:
-            candidate = text[:i] + confusion_pairs[char] + text[i+1:]
-            candidates.add(candidate)
-        for k, v in confusion_pairs.items():
-            if char == v:
-                candidate = text[:i] + k + text[i+1:]
-                candidates.add(candidate)
-    return list(candidates)
-

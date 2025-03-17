@@ -10,20 +10,19 @@ import re
 import tempfile
 from fpdf import FPDF
 import time
-from difflib import SequenceMatcher
 
 # --- Paramètres ---
 CONFIDENCE_THRESHOLD = 0.99  # 99% de confiance
 
-# --- Fonction pour nettoyer un numéro (supprime caractères spéciaux, S/N: etc.) ---
+# --- Fonction pour nettoyer un numéro (supprime caractères spéciaux, "S/N:" etc.) ---
 def sanitize_number(num):
-    # Supprime le préfixe "S/N:" (insensible à la casse, avec ou sans espaces, virgule, etc.)
+    # Supprime "S/N:" (insensible à la casse, avec ou sans espaces et ponctuation)
     sanitized = re.sub(r'(?i)S\s*/\s*N\s*[:,\-]?', '', num)
-    # Supprime tout caractère non alphanumérique
+    # Conserve uniquement les lettres et chiffres (supprime espaces et autres ponctuations)
     sanitized = re.sub(r'[^0-9A-Za-z]', '', sanitized)
     return sanitized
 
-# --- Dictionnaire de substitutions classiques (pour surligner) ---
+# --- Dictionnaire de substitutions classiques (pour surligner, optionnel) ---
 confusion_pairs = {
     'S': '8',
     '8': 'S',
@@ -42,21 +41,6 @@ def highlight_confusions(text):
         else:
             result_html += char
     return result_html
-
-# --- Fonction pour générer des candidats de correction ---
-def generate_candidates(text):
-    # Génère des candidats en substituant les caractères ambiguës
-    candidates = set()
-    candidates.add(text)
-    for i, char in enumerate(text):
-        if char in confusion_pairs:
-            candidate = text[:i] + confusion_pairs[char] + text[i+1:]
-            candidates.add(candidate)
-        for k, v in confusion_pairs.items():
-            if char == v:
-                candidate = text[:i] + k + text[i+1:]
-                candidates.add(candidate)
-    return list(candidates)
 
 # --- Fonction pour corriger l'orientation de l'image via EXIF ---
 def correct_image_orientation(image):
@@ -146,7 +130,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les segments (un par ligne) et validez-les. L'indice de confiance (issu d'EasyOCR) est affiché en pourcentage sous forme de barre de progression. Si l'indice est inférieur à 99%, l'opérateur doit agir sur le champ de modification (il doit modifier le texte pré-rempli) pour valider le segment. Seuls les segments validés seront nettoyés automatiquement avant de générer des codes‑barres et assembler un PDF téléchargeable.")
+st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les segments (un par ligne) et validez-les. L'indice de confiance (issu d'EasyOCR) est affiché en pourcentage et sous forme de barre de progression. Pour les segments avec une confiance inférieure à 99%, le champ de saisie sera laissé vide pour forcer une saisie manuelle. Seuls les segments validés seront nettoyés automatiquement avant de générer des codes‑barres et assembler un PDF téléchargeable.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -155,8 +139,8 @@ def load_ocr_model():
 ocr_reader = load_ocr_model()
 
 # --- Téléversement multiple de pages ---
-uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg, jpeg)",
-                                    type=["png", "jpg", "jpeg"],
+uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg, jpeg)", 
+                                    type=["png", "jpg", "jpeg"], 
                                     accept_multiple_files=True)
 
 overall_start = time.time()
@@ -167,7 +151,7 @@ if uploaded_files:
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
-            # Charger l'image, corriger l'orientation et redimensionner
+            # Charger, corriger l'orientation et redimensionner l'image
             image = Image.open(uploaded_file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
@@ -189,9 +173,8 @@ if uploaded_files:
             st.write(extracted_text)
             
             st.subheader("Séparez et nettoyez les segments (un par ligne)")
-            manual_text = st.text_area("Chaque ligne doit contenir un segment (les caractères spéciaux seront supprimés automatiquement) :", 
-                                       value=extracted_text, height=150, key=f"manual_{i}")
-            # Séparation en lignes et nettoyage automatique
+            manual_text = st.text_area("Chaque ligne doit contenir un segment :", value=extracted_text, height=150, key=f"manual_{i}")
+            # Séparer en lignes et nettoyer chaque segment
             lines = [sanitize_number(" ".join(l.split())) for l in manual_text.split('\n') if l.strip()]
             
             st.subheader("Validation des segments")
@@ -204,17 +187,23 @@ if uploaded_files:
                     st.progress(int(conf_pct))
                     st.markdown(f"Confiance : {conf_pct:.0f}%", unsafe_allow_html=True)
                     if conf_pct < 99:
-                        # Pour forcer l'action, le champ de saisie est pré-rempli mais doit être modifié
-                        user_input = st.text_input("Modifiez ce segment pour validation", value=num, key=f"input_{i}_{idx}")
-                        if user_input.strip() == "" or sanitize_number(user_input) == num:
-                            st.error("Vous devez modifier ce segment.")
+                        st.error("Ce segment a une faible confiance (< 99%). Veuillez retaper le segment pour validation.")
+                        # Pour forcer l'intervention, on ne pré-remplit pas le champ.
+                        user_input = st.text_input("Retapez le segment corrigé :", value="", key=f"input_{i}_{idx}")
+                        if user_input.strip() == "":
                             validated = False
                         else:
-                            validated = True
-                            final_val = sanitize_number(user_input)
+                            # Même si l'opérateur retape exactement le même résultat, il doit effectuer une action.
+                            if sanitize_number(user_input) == num:
+                                st.error("Le segment doit être modifié par rapport au résultat OCR.")
+                                validated = False
+                            else:
+                                validated = True
+                                final_val = sanitize_number(user_input)
                     else:
-                        # Pour segments avec confiance >= 99, on permet la confirmation ou modification
-                        user_input = st.text_input("Confirmez ou modifiez ce segment", value=num, key=f"input_{i}_{idx}")
+                        st.markdown(f"<span class='confidence-high'>Segment avec haute confiance</span>", unsafe_allow_html=True)
+                        # Pour segments avec confiance >= 99, le champ est pré-rempli et peut être validé ou modifié.
+                        user_input = st.text_input("Confirmez ou modifiez le segment", value=num, key=f"input_{i}_{idx}")
                         if user_input.strip() == "":
                             st.error("Le champ ne peut pas être vide.")
                             validated = False
@@ -233,7 +222,6 @@ if uploaded_files:
             if st.button(f"Confirmer cette page", key=f"page_confirm_{i}"):
                 if len(validated_page) == len(lines) and validated_page:
                     st.success(f"Tous les segments de la page {i+1} sont validés.")
-                    st.write("Codes‑barres générés pour cette page :")
                     barcode_cols = st.columns(3)
                     for idx, segment in enumerate(validated_page):
                         barcode_buffer = generate_barcode_pybarcode(segment)
@@ -273,3 +261,4 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
+

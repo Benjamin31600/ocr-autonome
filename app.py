@@ -1,8 +1,6 @@
 import streamlit as st
 from streamlit_cropper import st_cropper
 import easyocr
-import pytesseract
-import difflib
 import barcode
 from barcode.writer import ImageWriter
 from PIL import Image, ExifTags
@@ -11,6 +9,27 @@ import os
 import tempfile
 from fpdf import FPDF
 import time
+
+# --- Liste des paires de confusion fréquentes (pour surligner automatiquement) ---
+# Vous pouvez adapter ou étendre cette liste selon vos observations terrain.
+confusion_pairs = {
+    'S': '8',
+    '8': 'S',
+    'O': '0',
+    '0': 'O',
+    'I': '1',
+    '1': 'I',
+}
+
+# --- Fonction pour mettre en évidence les caractères à risque ---
+def highlight_confusions(num):
+    result_html = ""
+    for char in num:
+        if char in confusion_pairs or char in confusion_pairs.values():
+            result_html += f"<span style='color:red; font-weight:bold;'>{char}</span>"
+        else:
+            result_html += char
+    return result_html
 
 # --- Fonction pour corriger l'orientation de l'image via EXIF ---
 def correct_image_orientation(image):
@@ -37,24 +56,7 @@ def generate_barcode_pybarcode(sn):
     buffer.seek(0)
     return buffer
 
-# --- Fonction pour comparer deux chaînes et mettre en évidence les différences ---
-def highlight_differences(text1, text2):
-    # Compare caractere par caractere
-    diff = difflib.ndiff(list(text1), list(text2))
-    result_html = ""
-    for d in diff:
-        # '  ' signifie pas de différence
-        if d.startswith('  '):
-            result_html += d[2:]
-        # '-' indique que le caractère figure dans text1 mais pas text2
-        elif d.startswith('- '):
-            result_html += f"<span style='background-color:yellow; color:red;'>{d[2:]}</span>"
-        # '+' indique un caractère ajouté dans text2, on l'affiche en bleu
-        elif d.startswith('+ '):
-            result_html += f"<span style='background-color:yellow; color:blue;'>{d[2:]}</span>"
-    return result_html
-
-# --- Configuration de la page et styles CSS ---
+# --- Configuration de la page et styles CSS modernes ---
 st.set_page_config(page_title="Daher – OCR & Code‑barres Ultra Sécurisé", page_icon="✈️", layout="wide")
 st.markdown("""
     <style>
@@ -104,15 +106,11 @@ st.markdown("""
         background-color: rgba(255,0,0,0.1);
         margin-bottom: 4px;
     }
-    .low-confidence {
-        color: red;
-        font-weight: bold;
-    }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), comparez les extractions OCR d'EasyOCR et Tesseract, et corrigez si nécessaire. Le texte sera séparé ligne par ligne. Les différences entre les deux OCR seront mises en évidence afin que vous puissiez vérifier rapidement les anomalies (ex. un 'S' mal lu en '8'). Validez chaque numéro en cochant la case correspondante. Seuls les numéros validés seront utilisés pour générer les codes‑barres et le PDF final.")
+st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez et corrigez le texte extrait, séparez les numéros (un par ligne) et validez-les en cochant la case correspondante. Les numéros sont affichés avec les caractères à risque surlignés pour attirer votre attention. Seuls les numéros validés seront utilisés pour générer les codes‑barres et assembler le PDF final.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -126,13 +124,14 @@ uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg
                                     accept_multiple_files=True)
 
 overall_start = time.time()
-all_validated_serials = []
+all_validated_serials = []  # Stockera tous les numéros validés
 
 if uploaded_files:
     st.write("### Traitement des pages")
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
+            # Charger, corriger et redimensionner l'image
             image = Image.open(uploaded_file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
@@ -146,27 +145,15 @@ if uploaded_files:
             cropped_img.save(buf, format="PNG")
             cropped_bytes = buf.getvalue()
             
-            with st.spinner("Extraction OCR EasyOCR..."):
-                easy_results = ocr_reader.readtext(cropped_bytes)
-            with st.spinner("Extraction OCR Tesseract..."):
-                tess_text = pytesseract.image_to_string(cropped_img)
-            
-            st.markdown("**Résultat OCR (EasyOCR) :**")
-            easy_text = " ".join([res[1] for res in easy_results])
-            st.write(easy_text)
-            st.markdown("**Résultat OCR (Tesseract) :**")
-            st.write(tess_text)
-            
-            # Comparaison automatique des deux résultats
-            highlighted_diff = highlight_differences(easy_text, tess_text)
-            st.markdown("**Comparaison (différences mises en évidence) :**", unsafe_allow_html=True)
-            st.markdown(highlighted_diff, unsafe_allow_html=True)
-            
-            st.markdown("**Texte utilisé pour validation :**")
-            st.write(easy_text)
+            with st.spinner("Extraction OCR..."):
+                ocr_results = ocr_reader.readtext(cropped_bytes)
+            extracted_text = " ".join([res[1] for res in ocr_results])
+            st.markdown("**Texte extrait :**")
+            st.write(extracted_text)
             
             st.subheader("Séparez les numéros (un par ligne)")
-            manual_text = st.text_area("Corrigez ou séparez les numéros :", value=easy_text, height=150, key=f"manual_{i}")
+            manual_text = st.text_area("Corrigez ou séparez les numéros :", value=extracted_text, height=150, key=f"manual_{i}")
+            # Séparation en lignes et nettoyage
             lines = [" ".join(l.split()) for l in manual_text.split('\n') if l.strip()]
             
             st.subheader("Validation des numéros")
@@ -175,8 +162,9 @@ if uploaded_files:
                 for idx, num in enumerate(lines):
                     cols = st.columns([5,2])
                     with cols[0]:
-                        # Affichage du numéro avec surbrillance des différences
-                        st.markdown(f"**Numéro {idx+1} :** {highlight_confusions(num)}", unsafe_allow_html=True)
+                        # Affichage du numéro avec surbrillance des caractères à risque
+                        highlighted = highlight_confusions(num)
+                        st.markdown(f"**Numéro {idx+1} :** {highlighted}", unsafe_allow_html=True)
                     with cols[1]:
                         valid = st.checkbox("Valider", key=f"check_{i}_{idx}")
                     if valid:
@@ -196,7 +184,7 @@ if uploaded_files:
                         barcode_cols[idx % 3].image(barcode_buffer, caption=f"{number}", use_container_width=True)
                     all_validated_serials.extend(confirmed_numbers)
                 else:
-                    st.error("Veuillez valider TOUS les numéros de cette page.")
+                    st.error("Tous les numéros doivent être validés pour valider cette page.")
             page_end = time.time()
             st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
     
@@ -229,4 +217,3 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
-

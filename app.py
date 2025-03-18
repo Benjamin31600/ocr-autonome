@@ -13,17 +13,18 @@ import time
 from difflib import SequenceMatcher
 
 # --- Paramètres ---
-CONFIDENCE_THRESHOLD = 0.99  # Seuil de confiance (99%)
+CONFIDENCE_THRESHOLD = 0.99  # Seuil de confiance à 99%
+SIMILARITY_THRESHOLD = 0.85  # Seuil de similarité pour déclencher la suggestion
 
-# --- Fonction pour nettoyer un numéro (supprime caractères spéciaux et préfixe S/N:) ---
+# --- Fonction pour nettoyer un numéro (supprime caractères spéciaux, "S/N:" etc.) ---
 def sanitize_number(num):
-    # Supprime le préfixe "S/N:" (insensible à la casse, avec ou sans espaces, virgule, etc.)
+    # Supprime "S/N:" (insensible à la casse, avec ou sans espaces et ponctuation)
     sanitized = re.sub(r'(?i)S\s*/\s*N\s*[:,\-]?', '', num)
-    # Conserve uniquement les lettres et chiffres (supprime espaces, /, ;, etc.)
+    # Supprime tout caractère non alphanumérique
     sanitized = re.sub(r'[^0-9A-Za-z]', '', sanitized)
     return sanitized
 
-# --- Dictionnaire de substitutions classiques (pour surligner et générer des candidats) ---
+# --- Dictionnaire de substitutions classiques (pour générer des candidats) ---
 confusion_pairs = {
     'S': '8',
     '8': 'S',
@@ -57,14 +58,14 @@ def generate_candidates(text):
                 candidates.add(candidate)
     return list(candidates)
 
+# --- Fonction pour choisir la meilleure suggestion (ici, la première candidate différente du texte initial) ---
 def get_best_candidate(text):
     candidates = generate_candidates(text)
-    # Exclure le résultat initial
     candidates = [c for c in candidates if c != text]
     if candidates:
-        # On peut choisir ici la première candidate comme proposition
+        # On peut améliorer la sélection ici avec d'autres critères
         return candidates[0]
-    return ""
+    return text
 
 # --- Fonction pour corriger l'orientation de l'image via EXIF ---
 def correct_image_orientation(image):
@@ -154,7 +155,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge), vérifiez le texte extrait, et séparez les segments (un par ligne). Pour les segments dont l'indice de confiance (affiché en pourcentage et en barre de progression) est inférieur à 99%, vous devez choisir l'une des corrections proposées dans une liste déroulante (le système vous propose automatiquement une correction candidate). Cette sélection est obligatoire pour garantir une vérification active. Seuls les segments validés seront nettoyés automatiquement avant de générer des codes‑barres et assembler un PDF téléchargeable.")
+st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge) et extrayez le texte. L'indice de confiance (issu d'EasyOCR) est affiché en pourcentage et via une barre de progression. Pour les segments avec une confiance inférieure à 99%, une correction est proposée automatiquement. L'opérateur doit alors confirmer en sélectionnant une option différente du résultat initial. Pour les segments à haute confiance, le résultat est pré-rempli et validé automatiquement, mais peut être modifié si nécessaire. Seuls les segments validés seront nettoyés avant de générer des codes‑barres et assembler un PDF téléchargeable.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -175,7 +176,6 @@ if uploaded_files:
     for i, uploaded_file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
-            # Charger, corriger l'image et redimensionner
             image = Image.open(uploaded_file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
@@ -198,7 +198,6 @@ if uploaded_files:
             
             st.subheader("Séparez et nettoyez les segments (un par ligne)")
             manual_text = st.text_area("Chaque ligne doit contenir un segment :", value=extracted_text, height=150, key=f"manual_{i}")
-            # Séparation en lignes et nettoyage automatique
             lines = [sanitize_number(" ".join(l.split())) for l in manual_text.split('\n') if l.strip()]
             
             st.subheader("Validation des segments")
@@ -211,29 +210,27 @@ if uploaded_files:
                     st.progress(int(conf_pct))
                     st.markdown(f"Confiance : {conf_pct:.0f}%", unsafe_allow_html=True)
                     if conf_pct < 99:
-                        # Pour forcer une vérification active, proposer une correction candidate
+                        # Proposer une correction candidate automatiquement
                         candidate = get_best_candidate(num)
-                        if candidate == "":
-                            st.error("Aucune correction automatique générée. Intervention obligatoire.")
-                            option = st.text_input("Retapez le segment corrigé :", value="", key=f"input_{i}_{idx}")
-                        else:
-                            options = [candidate]  # On ne propose qu'une correction candidate
-                            option = st.selectbox("Veuillez choisir la correction proposée", options=options, key=f"select_{i}_{idx}")
-                        if option.strip() == "":
-                            st.error("Vous devez sélectionner une correction.")
+                        st.markdown(f"<span style='color:red;'>Segment douteux (conf. {conf_pct:.0f}%). Suggestion : {candidate}</span>", unsafe_allow_html=True)
+                        # Le menu déroulant ne propose que la suggestion
+                        selected = st.selectbox("Veuillez sélectionner la correction (différente du résultat initial)", options=[candidate], key=f"select_{i}_{idx}")
+                        if selected == num:
+                            st.error("Le segment doit être corrigé.")
                             validated = False
                         else:
                             validated = True
-                            final_val = sanitize_number(option)
+                            final_val = sanitize_number(selected)
                     else:
-                        # Pour segments avec haute confiance, afficher le résultat pré-rempli
-                        option = st.text_input("Confirmez ou modifiez le segment", value=num, key=f"input_{i}_{idx}")
-                        if option.strip() == "":
+                        st.markdown(f"<span class='confidence-high'>Segment à haute confiance</span>", unsafe_allow_html=True)
+                        # Pour les segments à haute confiance, le champ est pré-rempli
+                        selected = st.text_input("Confirmez ou modifiez le segment", value=num, key=f"input_{i}_{idx}")
+                        if selected.strip() == "":
                             st.error("Le champ ne peut pas être vide.")
                             validated = False
                         else:
                             validated = True
-                            final_val = sanitize_number(option)
+                            final_val = sanitize_number(selected)
                 else:
                     st.write("Confiance N/A")
                     validated = True
@@ -285,5 +282,4 @@ if uploaded_files:
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
-
 

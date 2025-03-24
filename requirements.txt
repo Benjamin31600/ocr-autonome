@@ -5,7 +5,7 @@ Pillow
 transformers
 torch
 streamlit-cropper
-fpdf
+fpdf2
 treepoem
 pytesseract
 

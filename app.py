@@ -1,38 +1,21 @@
 import streamlit as st
+from streamlit_cropper import st_cropper
 import easyocr
+import re
 import barcode
 from barcode.writer import ImageWriter
 from PIL import Image, ExifTags
 import io
+import sqlite3
+import threading
+import time
 import os
-import re
 import tempfile
 from fpdf import FPDF
-import time
-import pandas as pd
+import unicodedata
 
-# --- Fonction de nettoyage renforcé ---
-def sanitize_number(num: str) -> str:
-    """
-    Nettoie le texte en supprimant les préfixes 'S/N' ou 'SER' (insensible à la casse)
-    ainsi que tous les caractères non alphanumériques (espaces, tirets, ponctuation, etc.)
-    """
-    num = num.upper()
-    num = re.sub(r'(SER|S\s*/\s*N)[\s:,\-\.]*', '', num)
-    num = re.sub(r'[^0-9A-Z]', '', num)
-    return num
-
-# --- Fonction pour générer un code‑barres (Code128) ---
-def generate_barcode_pybarcode(sn: str) -> io.BytesIO:
-    CODE128 = barcode.get_barcode_class('code128')
-    barcode_obj = CODE128(sn, writer=ImageWriter())
-    buffer = io.BytesIO()
-    barcode_obj.write(buffer)
-    buffer.seek(0)
-    return buffer
-
-# --- Correction d'orientation de l'image ---
-def correct_image_orientation(image: Image.Image) -> Image.Image:
+# --- Fonction pour corriger l'orientation de l'image via EXIF ---
+def correct_image_orientation(image):
     try:
         exif = image._getexif()
         if exif:
@@ -47,129 +30,156 @@ def correct_image_orientation(image: Image.Image) -> Image.Image:
         st.warning(f"Erreur d'orientation : {e}")
     return image
 
+# --- Fonction pour nettoyer et extraire les numéros de série ---
+def clean_and_extract_serials(text):
+    text = unicodedata.normalize('NFD', text)
+    text = text.encode('ascii', 'ignore').decode('utf-8')
+    text = re.sub(r'[^A-Za-z0-9\s]', ' ', text)
+    text = re.sub(r'\bSER\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+', ' ', text).strip()
+    tokens = text.split()
+    serials = [t for t in tokens if re.match(r'^[A-Z0-9]{6,}$', t)]
+    return "\n".join(sorted(set(serials)))
+
+# --- Fonction pour générer un code-barres (Code128) ---
+def generate_barcode_pybarcode(sn):
+    CODE128 = barcode.get_barcode_class('code128')
+    barcode_obj = CODE128(sn, writer=ImageWriter())
+    buffer = io.BytesIO()
+    barcode_obj.write(buffer)
+    buffer.seek(0)
+    return buffer
+
 # --- Configuration de la page ---
-st.set_page_config(page_title="Daher – OCR & Code‑barres (Tableau éditable)", page_icon="✈️", layout="wide")
-st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
-    body {
-        background: linear-gradient(135deg, #0d1b2a, #1b263b);
-        font-family: 'Poppins', sans-serif;
-        color: #fff;
-    }
-    [data-testid="stAppViewContainer"] {
-        background: rgba(255,255,255,0.92);
-        border-radius: 20px;
-        padding: 2rem 3rem;
-        max-width: 1400px;
-        margin: 2rem auto;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.2);
-    }
-    </style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="Daher – Multi Page OCR & Code-barres", page_icon="🚀", layout="wide")
 
-st.title("Daher Aerospace – OCR & Code‑barres (Tableau éditable)")
-st.write("""
-Téléversez vos pages de bordereau. L’application extrait les numéros via OCR, les nettoie automatiquement 
-(en supprimant "S/N", "SER", espaces, tirets, etc.) et affiche le tout dans un tableau interactif. 
-Vous pouvez rapidement corriger les numéros dans ce tableau. 
-Ensuite, cliquez sur « Valider la table » pour enregistrer vos modifications, afficher un aperçu des codes‑barres, 
-et enfin générer un PDF regroupant tous les codes‑barres validés.
+# --- Connexion à la base SQLite ---
+conn = sqlite3.connect("feedback.db", check_same_thread=False)
+c = conn.cursor()
+c.execute("""
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    image BLOB,
+    ocr_text TEXT,
+    validated_fields TEXT
+)
 """)
+conn.commit()
 
-# --- Chargement du modèle OCR ---
+# --- Charger EasyOCR ---
 @st.cache_resource
 def load_ocr_model():
     return easyocr.Reader(['fr', 'en'])
 ocr_reader = load_ocr_model()
 
-# --- Téléversement des images ---
-uploaded_files = st.file_uploader("Téléchargez vos pages (PNG, JPG, JPEG) :", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+# --- Téléversement multiple de pages ---
+uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg, jpeg)",
+                                    type=["png", "jpg", "jpeg"],
+                                    accept_multiple_files=True)
 
 if uploaded_files:
     overall_start = time.time()
-    all_validated_numbers = []
-    extracted_data = []  # Liste pour stocker les données OCR sous forme de dict
+    all_validated_serials = []
     st.write("### Traitement des pages")
-    
-    for idx, file in enumerate(uploaded_files):
-        st.subheader(f"Page {idx+1}")
-        image = Image.open(file)
-        image = correct_image_orientation(image)
-        image.thumbnail((1500,1500))
-        st.image(image, caption="Image originale (redimensionnée)", use_container_width=True)
-        
-        # Utilisez st_cropper pour sélectionner la zone d'intérêt
-        st.write("Sélectionnez la zone d'intérêt (cadre rouge) :")
-        from streamlit_cropper import st_cropper  # Assurez-vous que streamlit-cropper est installé
-        cropped_img = st_cropper(image, realtime_update=True, box_color="#FF0000", aspect_ratio=None, key=f"crop_{idx}")
-        st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
-        
-        # Convertir l'image recadrée en bytes
-        buf = io.BytesIO()
-        cropped_img.save(buf, format="PNG")
-        cropped_bytes = buf.getvalue()
-        
-        with st.spinner("Extraction OCR..."):
-            ocr_results = ocr_reader.readtext(cropped_bytes)
-        
-        # Pour simplifier, nous considérons chaque mot OCR comme un segment
-        for res in ocr_results:
-            text = res[1]
-            conf = res[2]
-            # Nettoyage automatique
-            clean_text = sanitize_number(text)
-            extracted_data.append({
-                "OCR_Result": text,
-                "Proposition": clean_text,
-                "Confiance (%)": int(conf*100)
-            })
-    
-    # Créer un DataFrame à partir des données extraites
-    df = pd.DataFrame(extracted_data)
-    
-    st.write("### Tableaux des numéros extraits")
-    st.write("Vous pouvez modifier directement la colonne 'Proposition' si une correction est nécessaire.")
-    
-    # Utiliser l'éditeur de données interactif
-    edited_df = st.experimental_data_editor(df, num_rows="dynamic", use_container_width=True)
-    
-    # Bouton pour valider la table
-    if st.button("Valider la table"):
-        # Extraire la colonne validée
-        final_numbers = edited_df["Proposition"].tolist()
-        st.success("Table validée.")
-        all_validated_numbers.extend(final_numbers)
-        
-        # Afficher un aperçu des codes‑barres
-        st.write("### Aperçu des codes‑barres")
-        cols = st.columns(3)
-        for i, num in enumerate(final_numbers):
-            barcode_buffer = generate_barcode_pybarcode(num)
-            cols[i % 3].image(barcode_buffer, caption=num, use_container_width=True)
-        
-        # Générer le PDF final
-        if st.button("Générer le PDF de tous les codes‑barres"):
-            with st.spinner("Génération du PDF..."):
-                try:
-                    pdf = FPDF()
-                    pdf.set_auto_page_break(0, margin=10)
-                    temp_dir = tempfile.gettempdir()
-                    for num in final_numbers:
-                        buf = generate_barcode_pybarcode(num)
-                        fname = os.path.join(temp_dir, f"barcode_{num}.png")
-                        with open(fname, "wb") as f:
-                            f.write(buf.getvalue())
-                        pdf.add_page()
-                        pdf.image(fname, x=10, y=10, w=pdf.w - 20)
-                    pdf_path = os.path.join(temp_dir, "barcodes.pdf")
-                    pdf.output(pdf_path, "F")
-                    with open(pdf_path, "rb") as f:
-                        pdf_data = f.read()
-                    st.download_button("Télécharger le PDF", data=pdf_data, file_name="barcodes.pdf", mime="application/pdf")
-                except Exception as e:
-                    st.error(f"Erreur lors de la génération du PDF : {e}")
-    
+
+    for i, uploaded_file in enumerate(uploaded_files):
+        with st.expander(f"Page {i+1}", expanded=True):
+            page_start = time.time()
+            image = Image.open(uploaded_file)
+            image = correct_image_orientation(image)
+            image.thumbnail((1500, 1500))
+            st.image(image, caption="Image originale (redimensionnée)", use_container_width=True)
+
+            st.write("Sélectionnez la zone contenant les numéros (le cadre sera affiché en rouge) :")
+            cropped_img = st_cropper(image, realtime_update=True, box_color="#FF0000", aspect_ratio=None, key=f"cropper_{i}")
+            st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
+
+            buf = io.BytesIO()
+            cropped_img.save(buf, format="PNG")
+            cropped_bytes = buf.getvalue()
+
+            with st.spinner("Extraction OCR..."):
+                ocr_results = ocr_reader.readtext(cropped_bytes)
+            extracted_text = " ".join([res[1] for res in ocr_results])
+            cleaned_serials = clean_and_extract_serials(extracted_text)
+
+            st.markdown("**Numéros de série extraits automatiquement :**")
+            manual_text = st.text_area("Confirmez ou modifiez les numéros (1 par ligne) :", value=cleaned_serials, height=150, key=f"manual_{i}")
+            lines = [line.strip() for line in manual_text.split('\n') if line.strip()]
+
+            st.subheader("Validez les numéros")
+            with st.form(key=f"form_page_{i}"):
+                confirmed_lines = []
+                for idx, line in enumerate(lines):
+                    col1, col2 = st.columns([4,1])
+                    with col1:
+                        current_line = st.text_input(f"Numéro {idx+1}", value=line, key=f"num_{i}_{idx}")
+                    with col2:
+                        valid = st.checkbox("Confirmer", key=f"check_{i}_{idx}")
+                    if valid:
+                        confirmed_lines.append(current_line)
+                submit_page = st.form_submit_button("Valider les numéros de cette page")
+
+            if submit_page:
+                if confirmed_lines:
+                    st.success(f"Page {i+1} validée avec {len(confirmed_lines)} numéro(s) confirmé(s).")
+                    st.write("Codes-barres générés pour cette page :")
+                    cols = st.columns(3)
+                    idx = 0
+                    for number in confirmed_lines:
+                        barcode_buffer = generate_barcode_pybarcode(number)
+                        cols[idx].image(barcode_buffer, caption=f"{number}", use_container_width=True)
+                        idx = (idx + 1) % 3
+                    all_validated_serials.extend(confirmed_lines)
+                else:
+                    st.warning(f"Page {i+1} : Aucun numéro confirmé.")
+            page_end = time.time()
+            st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
+
+    if all_validated_serials and st.button("Générer PDF de tous les codes-barres"):
+        st.write("Début de la génération du PDF...")
+        try:
+            pdf = FPDF()
+            pdf.set_auto_page_break(0, margin=10)
+            temp_dir = tempfile.gettempdir()
+            for vsn in all_validated_serials:
+                barcode_buffer = generate_barcode_pybarcode(vsn)
+                file_name = f"barcode_{vsn.replace(' ', '_')}.png"
+                image_path = os.path.join(temp_dir, file_name)
+                with open(image_path, "wb") as f:
+                    f.write(barcode_buffer.getvalue())
+                pdf.add_page()
+                pdf.image(image_path, x=10, y=10, w=pdf.w - 20)
+            pdf_path = os.path.join(temp_dir, "barcodes.pdf")
+            pdf.output(pdf_path, "F")
+            with open(pdf_path, "rb") as f:
+                pdf_data = f.read()
+            st.download_button("Télécharger le PDF des codes-barres", data=pdf_data, file_name="barcodes.pdf", mime="application/pdf")
+        except Exception as e:
+            st.error("Erreur lors de la génération du PDF : " + str(e))
+
+    if st.button("Valider et Enregistrer le Feedback global"):
+        with st.spinner("Enregistrement du feedback..."):
+            combined_text = ""
+            for file in uploaded_files:
+                combined_text += "\n---\n"
+                img = Image.open(file)
+                img = correct_image_orientation(img)
+                img.thumbnail((1500, 1500))
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                page_bytes = buf.getvalue()
+                with st.spinner("Extraction OCR..."):
+                    results = ocr_reader.readtext(page_bytes)
+                combined_text += " ".join([res[1] for res in results])
+            def save_feedback():
+                c.execute("INSERT INTO feedback (image, ocr_text, validated_fields) VALUES (?, ?, ?)",
+                          (b"Multiple pages", combined_text, " | ".join(all_validated_serials)))
+                conn.commit()
+            threading.Thread(target=save_feedback).start()
+            st.success("Feedback global enregistré avec succès !")
+
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")
+
 

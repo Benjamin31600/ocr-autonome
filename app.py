@@ -10,19 +10,18 @@ import re
 import tempfile
 from fpdf import FPDF
 import time
-from difflib import SequenceMatcher
 
-# --- Paramètres ---
-CONFIDENCE_THRESHOLD = 0.99  # Seuil de confiance (99%)
-
-# --- Fonction de nettoyage améliorée ---
+# --- Fonction de nettoyage renforcé ---
 def sanitize_number(num):
-    # Supprime les préfixes "S/N", "SER", etc., insensible à la casse, ainsi que tous caractères spéciaux, espaces, tirets, ponctuation
-    sanitized = re.sub(r'(?i)(S\s*/\s*N|SER)', '', num)
-    sanitized = re.sub(r'[^0-9A-Za-z]', '', sanitized)
-    return sanitized
+    # Convertir en majuscules pour uniformiser
+    num = num.upper()
+    # Supprimer les préfixes "S/N" ou "SER" éventuellement suivis de ponctuation ou d'espaces
+    num = re.sub(r'(S\s*/\s*N|SER)[\s:,\-]*', '', num)
+    # Supprimer tous les caractères qui ne sont pas lettres ou chiffres (supprime espaces, tirets, ponctuations, etc.)
+    num = re.sub(r'[^0-9A-Z]', '', num)
+    return num
 
-# --- Dictionnaire de substitutions classiques pour candidats (optionnel) ---
+# --- Dictionnaire de substitutions classiques (optionnel pour surligner) ---
 confusion_pairs = {
     'S': '8',
     '8': 'S',
@@ -32,15 +31,14 @@ confusion_pairs = {
     '1': 'I',
 }
 
-# --- Fonction pour surligner (optionnel) ---
 def highlight_confusions(text):
-    result = ""
+    result_html = ""
     for char in text:
         if char in confusion_pairs or char in confusion_pairs.values():
-            result += f"<span style='color:red;font-weight:bold'>{char}</span>"
+            result_html += f"<span style='color:red; font-weight:bold;'>{char}</span>"
         else:
-            result += char
-    return result
+            result_html += char
+    return result_html
 
 # --- Fonction pour générer des candidats de correction ---
 def generate_candidates(text):
@@ -54,14 +52,14 @@ def generate_candidates(text):
             if char == v:
                 candidate = text[:i] + k + text[i+1:]
                 candidates.add(candidate)
-    # On retourne uniquement des candidats différents
+    # Retourne uniquement les candidats différents du texte initial
     return [c for c in candidates if c != text]
 
 def get_best_candidate(text):
     cands = generate_candidates(text)
     return cands[0] if cands else text
 
-# --- Fonction pour corriger l'orientation ---
+# --- Fonction pour corriger l'orientation de l'image ---
 def correct_image_orientation(image):
     try:
         exif = image._getexif()
@@ -92,16 +90,45 @@ st.set_page_config(page_title="Daher – OCR & Code‑barres Ultra Sécurisé", 
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
-    body { background: linear-gradient(135deg, #0d1b2a, #1b263b); font-family: 'Poppins', sans-serif; color: #fff; margin: 0; padding: 0; }
-    [data-testid="stAppViewContainer"] { background: rgba(255,255,255,0.92); backdrop-filter: blur(8px); border-radius: 20px; padding: 2rem 3rem; max-width: 1400px; margin: 2rem auto; box-shadow: 0 10px 20px rgba(0,0,0,0.2); }
-    .validated { border: 2px solid #00FF00; padding: 8px; border-radius: 8px; background-color: rgba(0,255,0,0.1); margin-bottom: 4px; }
-    .nonvalidated { border: 2px solid #FF0000; padding: 8px; border-radius: 8px; background-color: rgba(255,0,0,0.1); margin-bottom: 4px; }
-    .confidence { font-weight: bold; }
+    body {
+        background: linear-gradient(135deg, #0d1b2a, #1b263b);
+        font-family: 'Poppins', sans-serif;
+        color: #ffffff;
+        margin: 0;
+        padding: 0;
+    }
+    [data-testid="stAppViewContainer"] {
+        background: rgba(255,255,255,0.92);
+        backdrop-filter: blur(8px);
+        border-radius: 20px;
+        padding: 2rem 3rem;
+        max-width: 1400px;
+        margin: 2rem auto;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+    }
+    .validated {
+        border: 2px solid #00FF00;
+        padding: 8px;
+        border-radius: 8px;
+        background-color: rgba(0,255,0,0.1);
+        margin-bottom: 4px;
+    }
+    .nonvalidated {
+        border: 2px solid #FF0000;
+        padding: 8px;
+        border-radius: 8px;
+        background-color: rgba(255,0,0,0.1);
+        margin-bottom: 4px;
+    }
+    .confidence {
+        font-weight: bold;
+        font-size: 14px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
-st.write("Téléversez vos pages. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge) et extrayez le texte. Chaque segment est affiché avec une barre de progression et un pourcentage de confiance. Pour les segments dont la confiance est < 99%, un menu déroulant vous propose une correction candidate (qui supprime automatiquement 'S/N', 'SER', espaces, tirets, etc.). Ensuite, un bouton 'Afficher Code Barre' vous permet de vérifier individuellement le code barre généré pour ce segment. Une fois confirmé, cliquez sur 'Confirmer' pour valider ce segment.")
+st.write("Téléversez les pages de votre bordereau. L'outil extrait le texte via OCR, nettoie automatiquement les segments (supprime espaces, tirets, 'S/N', 'SER', etc.) et affiche un indice de confiance sous forme de barre de progression et en pourcentage. Pour chaque segment, l'opérateur doit confirmer la validité via une interface de validation visuelle individuelle. Ensuite, les segments validés serviront à générer les codes‑barres et à assembler un PDF téléchargeable.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -110,7 +137,7 @@ def load_ocr_model():
 ocr_reader = load_ocr_model()
 
 # --- Téléversement multiple de pages ---
-uploaded_files = st.file_uploader("Téléchargez vos pages (png, jpg, jpeg)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Téléchargez les pages (png, jpg, jpeg)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
 overall_start = time.time()
 all_validated_serials = []
@@ -125,7 +152,7 @@ if uploaded_files:
             image.thumbnail((1500, 1500))
             st.image(image, caption="Image originale", use_container_width=True)
             
-            st.write("Sélectionnez la zone d'intérêt:")
+            st.write("Sélectionnez la zone d'intérêt (cadre rouge) :")
             cropped = st_cropper(image, key=f"cropper_{i}")
             st.image(cropped, caption="Zone sélectionnée", use_container_width=True)
             
@@ -139,7 +166,7 @@ if uploaded_files:
             confidences = [r[2] for r in results]
             st.write("Texte extrait:", ocr_text)
             
-            # Supposons ici une segmentation basée sur la séparation par espaces
+            # Découper le texte en segments (ici par espaces pour simplifier)
             segments = [sanitize_number(seg) for seg in ocr_text.split()]
             
             page_validated = []
@@ -149,44 +176,42 @@ if uploaded_files:
                     conf = confidences[j]
                     conf_pct = conf * 100
                     st.progress(int(conf_pct))
-                    st.markdown(f"Confiance : <span class='confidence'>{conf_pct:.0f}%</span>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='confidence'>Confiance : {conf_pct:.0f}%</div>", unsafe_allow_html=True)
                     
                     if conf_pct < 99:
-                        # Proposer correction candidate
+                        st.error("Segment douteux ! Une correction est requise.")
+                        # Génère automatiquement une correction candidate et supprime les caractères indésirables
                         candidate = get_best_candidate(seg)
-                        st.markdown(f"<span style='color:red;'>Correction proposée : {candidate}</span>", unsafe_allow_html=True)
-                        # Menu déroulant pour forcer à choisir une correction (on ne propose qu'une option ici)
-                        selected = st.selectbox("Veuillez sélectionner la correction", options=[candidate], key=f"select_{i}_{j}")
-                        if selected == seg:
-                            st.error("Le segment doit être corrigé.")
+                        # Propose via un menu déroulant (l'opérateur doit cliquer et confirmer une option différente)
+                        selection = st.selectbox("Sélectionnez la correction proposée", options=[candidate], key=f"select_{i}_{j}")
+                        if selection == seg:
+                            st.error("La correction doit être différente du résultat initial.")
                             validated = False
                         else:
                             validated = True
-                            final_seg = sanitize_number(selected)
+                            final_seg = sanitize_number(selection)
                     else:
-                        # Pour segments avec haute confiance, proposer un bouton pour afficher le code barre
-                        if st.button("Afficher Code Barre", key=f"show_{i}_{j}"):
-                            barcode_buf = generate_barcode_pybarcode(seg)
-                            st.image(barcode_buf, caption=f"Code barre pour {seg}", use_container_width=True)
-                        # Le segment est validé par défaut
-                        validated = True
-                        final_seg = seg
+                        # Pour segments fiables, afficher un bouton de validation individuel
+                        if st.button(f"Valider ce segment", key=f"confirm_{i}_{j}"):
+                            validated = True
+                            final_seg = seg
+                        else:
+                            validated = False
+                    if validated:
+                        st.markdown(f"<div class='validated'>Segment validé : {final_seg}</div>", unsafe_allow_html=True)
+                        page_validated.append(final_seg)
+                    else:
+                        st.markdown(f"<div class='nonvalidated'>Segment non validé</div>", unsafe_allow_html=True)
                 else:
-                    validated = True
-                    final_seg = seg
-                if validated:
-                    st.markdown(f"<div class='validated'>Segment validé : {final_seg}</div>", unsafe_allow_html=True)
-                    page_validated.append(final_seg)
-                else:
-                    st.markdown(f"<div class='nonvalidated'>Segment non validé</div>", unsafe_allow_html=True)
-            
+                    st.write("Confiance N/A")
+                    page_validated.append(seg)
             if st.button(f"Confirmer cette page", key=f"page_confirm_{i}"):
                 if len(page_validated) == len(segments) and page_validated:
                     st.success(f"Page {i+1} validée.")
-                    # Pour chaque segment validé, afficher un bouton individuel pour générer le code barre et le flasher
+                    # Pour chaque segment validé, afficher un bouton pour flasher le code barre individuellement
                     barcode_cols = st.columns(3)
                     for j, segment in enumerate(page_validated):
-                        if st.button(f"Flasher Code Barre pour segment {j+1}", key=f"flash_{i}_{j}"):
+                        if st.button(f"Flasher code barre (segment {j+1})", key=f"flash_{i}_{j}"):
                             barcode_buf = generate_barcode_pybarcode(segment)
                             barcode_cols[j % 3].image(barcode_buf, caption=f"{segment}", use_container_width=True)
                     all_validated_serials.extend(page_validated)

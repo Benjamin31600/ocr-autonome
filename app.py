@@ -1,19 +1,67 @@
 import streamlit as st
 from streamlit_cropper import st_cropper
 import easyocr
-import re
 import barcode
 from barcode.writer import ImageWriter
 from PIL import Image, ExifTags
 import io
-import sqlite3
-import threading
-import time
 import os
+import re
 import tempfile
 from fpdf import FPDF
+import time
+from difflib import SequenceMatcher
 
-# --- Fonction pour corriger l'orientation de l'image via EXIF ---
+# --- Paramètres ---
+CONFIDENCE_THRESHOLD = 0.99  # Seuil de confiance (99%)
+
+# --- Fonction de nettoyage améliorée ---
+def sanitize_number(num):
+    # Supprime les préfixes "S/N", "SER", etc., insensible à la casse, ainsi que tous caractères spéciaux, espaces, tirets, ponctuation
+    sanitized = re.sub(r'(?i)(S\s*/\s*N|SER)', '', num)
+    sanitized = re.sub(r'[^0-9A-Za-z]', '', sanitized)
+    return sanitized
+
+# --- Dictionnaire de substitutions classiques pour candidats (optionnel) ---
+confusion_pairs = {
+    'S': '8',
+    '8': 'S',
+    'O': '0',
+    '0': 'O',
+    'I': '1',
+    '1': 'I',
+}
+
+# --- Fonction pour surligner (optionnel) ---
+def highlight_confusions(text):
+    result = ""
+    for char in text:
+        if char in confusion_pairs or char in confusion_pairs.values():
+            result += f"<span style='color:red;font-weight:bold'>{char}</span>"
+        else:
+            result += char
+    return result
+
+# --- Fonction pour générer des candidats de correction ---
+def generate_candidates(text):
+    candidates = set()
+    candidates.add(text)
+    for i, char in enumerate(text):
+        if char in confusion_pairs:
+            candidate = text[:i] + confusion_pairs[char] + text[i+1:]
+            candidates.add(candidate)
+        for k, v in confusion_pairs.items():
+            if char == v:
+                candidate = text[:i] + k + text[i+1:]
+                candidates.add(candidate)
+    # On retourne uniquement des candidats différents
+    return [c for c in candidates if c != text]
+
+def get_best_candidate(text):
+    cands = generate_candidates(text)
+    return cands[0] if cands else text
+
+# --- Fonction pour corriger l'orientation ---
 def correct_image_orientation(image):
     try:
         exif = image._getexif()
@@ -29,80 +77,31 @@ def correct_image_orientation(image):
         st.warning(f"Erreur d'orientation : {e}")
     return image
 
-# --- Fonction pour générer un code?barres (Code128) ---
+# --- Fonction pour générer un code‑barres (Code128) ---
 def generate_barcode_pybarcode(sn):
+    sn_clean = sanitize_number(sn)
     CODE128 = barcode.get_barcode_class('code128')
-    # On ne désactive pas l'option add_checksum ici afin de générer un code 128 standard
-    barcode_obj = CODE128(sn, writer=ImageWriter())
+    barcode_obj = CODE128(sn_clean, writer=ImageWriter())
     buffer = io.BytesIO()
     barcode_obj.write(buffer)
     buffer.seek(0)
     return buffer
 
 # --- Configuration de la page ---
-st.set_page_config(page_title="Daher – Multi Page OCR & Code?barres", page_icon="??", layout="wide")
+st.set_page_config(page_title="Daher – OCR & Code‑barres Ultra Sécurisé", page_icon="✈️", layout="wide")
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
-    body {
-        background: linear-gradient(135deg, #0d1b2a, #1b263b);
-        font-family: 'Poppins', sans-serif;
-        color: #ffffff;
-        margin: 0;
-        padding: 0;
-    }
-    [data-testid="stAppViewContainer"] {
-        background: rgba(255,255,255,0.92);
-        backdrop-filter: blur(8px);
-        border-radius: 20px;
-        padding: 2rem 3rem;
-        max-width: 1400px;
-        margin: 2rem auto;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.2);
-    }
-    .stButton button {
-        background-color: #0d1b2a;
-        color: #fff;
-        border: none;
-        border-radius: 30px;
-        padding: 14px 40px;
-        font-size: 16px;
-        font-weight: 600;
-        box-shadow: 0 8px 16px rgba(0,0,0,0.2);
-        transition: background-color 0.3s ease, transform 0.2s ease;
-    }
-    .stButton button:hover {
-        background-color: #415a77;
-        transform: translateY(-3px);
-    }
-    .validation-box {
-        padding: 8px;
-        margin: 4px 0;
-        border: 2px solid #00FF00;
-        border-radius: 8px;
-        background-color: rgba(0,255,0,0.1);
-        font-size: 16px;
-        font-weight: 600;
-        color: #000;
-    }
+    body { background: linear-gradient(135deg, #0d1b2a, #1b263b); font-family: 'Poppins', sans-serif; color: #fff; margin: 0; padding: 0; }
+    [data-testid="stAppViewContainer"] { background: rgba(255,255,255,0.92); backdrop-filter: blur(8px); border-radius: 20px; padding: 2rem 3rem; max-width: 1400px; margin: 2rem auto; box-shadow: 0 10px 20px rgba(0,0,0,0.2); }
+    .validated { border: 2px solid #00FF00; padding: 8px; border-radius: 8px; background-color: rgba(0,255,0,0.1); margin-bottom: 4px; }
+    .nonvalidated { border: 2px solid #FF0000; padding: 8px; border-radius: 8px; background-color: rgba(255,0,0,0.1); margin-bottom: 4px; }
+    .confidence { font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – OCR Multi Page & Code?barres")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (le cadre sera en rouge), vérifiez le texte extrait, séparez les numéros (un par ligne) et confirmez chaque numéro pour générer le code?barres correspondant. Vous pourrez ensuite créer un PDF regroupant tous les codes?barres.")
-
-# --- Connexion à la base SQLite ---
-conn = sqlite3.connect("feedback.db", check_same_thread=False)
-c = conn.cursor()
-c.execute("""
-CREATE TABLE IF NOT EXISTS feedback (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    image BLOB,
-    ocr_text TEXT,
-    validated_fields TEXT
-)
-""")
-conn.commit()
+st.title("Daher Aerospace – OCR & Code‑barres Ultra Sécurisé")
+st.write("Téléversez vos pages. Pour chaque page, sélectionnez la zone d'intérêt (cadre rouge) et extrayez le texte. Chaque segment est affiché avec une barre de progression et un pourcentage de confiance. Pour les segments dont la confiance est < 99%, un menu déroulant vous propose une correction candidate (qui supprime automatiquement 'S/N', 'SER', espaces, tirets, etc.). Ensuite, un bouton 'Afficher Code Barre' vous permet de vérifier individuellement le code barre généré pour ce segment. Une fois confirmé, cliquez sur 'Confirmer' pour valider ce segment.")
 
 # --- Charger EasyOCR ---
 @st.cache_resource
@@ -111,126 +110,111 @@ def load_ocr_model():
 ocr_reader = load_ocr_model()
 
 # --- Téléversement multiple de pages ---
-uploaded_files = st.file_uploader("Téléchargez les pages de votre BL (png, jpg, jpeg)",
-                                    type=["png", "jpg", "jpeg"],
-                                    accept_multiple_files=True)
+uploaded_files = st.file_uploader("Téléchargez vos pages (png, jpg, jpeg)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+
+overall_start = time.time()
+all_validated_serials = []
 
 if uploaded_files:
-    overall_start = time.time()
-    all_validated_serials = []  # Liste globale pour stocker les numéros confirmés de toutes les pages
     st.write("### Traitement des pages")
-    
-    for i, uploaded_file in enumerate(uploaded_files):
+    for i, file in enumerate(uploaded_files):
         with st.expander(f"Page {i+1}", expanded=True):
             page_start = time.time()
-            # Charger l'image, corriger l'orientation et redimensionner
-            image = Image.open(uploaded_file)
+            image = Image.open(file)
             image = correct_image_orientation(image)
             image.thumbnail((1500, 1500))
-            st.image(image, caption="Image originale (redimensionnée)", use_container_width=True)
+            st.image(image, caption="Image originale", use_container_width=True)
             
-            st.write("Sélectionnez la zone contenant les numéros (le cadre sera affiché en rouge) :")
-            cropped_img = st_cropper(image, realtime_update=True, box_color="#FF0000", aspect_ratio=None, key=f"cropper_{i}")
-            st.image(cropped_img, caption="Zone sélectionnée", use_container_width=True)
+            st.write("Sélectionnez la zone d'intérêt:")
+            cropped = st_cropper(image, key=f"cropper_{i}")
+            st.image(cropped, caption="Zone sélectionnée", use_container_width=True)
             
             buf = io.BytesIO()
-            cropped_img.save(buf, format="PNG")
+            cropped.save(buf, format="PNG")
             cropped_bytes = buf.getvalue()
             
             with st.spinner("Extraction OCR..."):
-                ocr_results = ocr_reader.readtext(cropped_bytes)
-            extracted_text = " ".join([res[1] for res in ocr_results])
-            st.markdown("**Texte extrait :**")
-            st.write(extracted_text)
+                results = ocr_reader.readtext(cropped_bytes)
+            ocr_text = " ".join([r[1] for r in results])
+            confidences = [r[2] for r in results]
+            st.write("Texte extrait:", ocr_text)
             
-            # Séparation manuelle
-            st.subheader("Séparez les numéros (un par ligne)")
-            manual_text = st.text_area("Un numéro par ligne :", value=extracted_text, height=150, key=f"manual_{i}")
-            # Nettoyage : suppression des espaces superflus
-            lines = [" ".join(l.split()) for l in manual_text.split('\n') if l.strip()]
+            # Supposons ici une segmentation basée sur la séparation par espaces
+            segments = [sanitize_number(seg) for seg in ocr_text.split()]
             
-            # Formulaire de validation des numéros de cette page
-            st.subheader("Validez les numéros")
-            with st.form(key=f"form_page_{i}"):
-                confirmed_lines = []
-                for idx, line in enumerate(lines):
-                    # Affichage d'un champ avec le numéro et une case à cocher pour confirmer
-                    col1, col2 = st.columns([4,1])
-                    with col1:
-                        current_line = st.text_input(f"Numéro {idx+1}", value=line, key=f"num_{i}_{idx}")
-                    with col2:
-                        valid = st.checkbox("Confirmer", key=f"check_{i}_{idx}")
-                    if valid:
-                        confirmed_lines.append(current_line)
-                    st.markdown(f'<div class="validation-box">{"Conforme" if valid else "Non confirmé"}</div>', unsafe_allow_html=True)
-                submit_page = st.form_submit_button("Valider les numéros de cette page")
-            
-            if submit_page:
-                if confirmed_lines:
-                    st.success(f"Page {i+1} validée avec {len(confirmed_lines)} numéro(s) confirmé(s).")
-                    # Affichage des codes?barres pour cette page
-                    st.write("Codes?barres générés pour cette page :")
-                    cols = st.columns(3)
-                    idx = 0
-                    for number in confirmed_lines:
-                        barcode_buffer = generate_barcode_pybarcode(number)
-                        cols[idx].image(barcode_buffer, caption=f"{number}", use_container_width=True)
-                        idx = (idx + 1) % 3
-                    all_validated_serials.extend(confirmed_lines)
+            page_validated = []
+            for j, seg in enumerate(segments):
+                st.markdown(f"**Segment {j+1} :** {highlight_confusions(seg)}", unsafe_allow_html=True)
+                if j < len(confidences):
+                    conf = confidences[j]
+                    conf_pct = conf * 100
+                    st.progress(int(conf_pct))
+                    st.markdown(f"Confiance : <span class='confidence'>{conf_pct:.0f}%</span>", unsafe_allow_html=True)
+                    
+                    if conf_pct < 99:
+                        # Proposer correction candidate
+                        candidate = get_best_candidate(seg)
+                        st.markdown(f"<span style='color:red;'>Correction proposée : {candidate}</span>", unsafe_allow_html=True)
+                        # Menu déroulant pour forcer à choisir une correction (on ne propose qu'une option ici)
+                        selected = st.selectbox("Veuillez sélectionner la correction", options=[candidate], key=f"select_{i}_{j}")
+                        if selected == seg:
+                            st.error("Le segment doit être corrigé.")
+                            validated = False
+                        else:
+                            validated = True
+                            final_seg = sanitize_number(selected)
+                    else:
+                        # Pour segments avec haute confiance, proposer un bouton pour afficher le code barre
+                        if st.button("Afficher Code Barre", key=f"show_{i}_{j}"):
+                            barcode_buf = generate_barcode_pybarcode(seg)
+                            st.image(barcode_buf, caption=f"Code barre pour {seg}", use_container_width=True)
+                        # Le segment est validé par défaut
+                        validated = True
+                        final_seg = seg
                 else:
-                    st.warning(f"Page {i+1} : Aucun numéro confirmé.")
+                    validated = True
+                    final_seg = seg
+                if validated:
+                    st.markdown(f"<div class='validated'>Segment validé : {final_seg}</div>", unsafe_allow_html=True)
+                    page_validated.append(final_seg)
+                else:
+                    st.markdown(f"<div class='nonvalidated'>Segment non validé</div>", unsafe_allow_html=True)
+            
+            if st.button(f"Confirmer cette page", key=f"page_confirm_{i}"):
+                if len(page_validated) == len(segments) and page_validated:
+                    st.success(f"Page {i+1} validée.")
+                    # Pour chaque segment validé, afficher un bouton individuel pour générer le code barre et le flasher
+                    barcode_cols = st.columns(3)
+                    for j, segment in enumerate(page_validated):
+                        if st.button(f"Flasher Code Barre pour segment {j+1}", key=f"flash_{i}_{j}"):
+                            barcode_buf = generate_barcode_pybarcode(segment)
+                            barcode_cols[j % 3].image(barcode_buf, caption=f"{segment}", use_container_width=True)
+                    all_validated_serials.extend(page_validated)
+                else:
+                    st.error("Tous les segments doivent être validés pour cette page.")
             page_end = time.time()
-            st.write(f"Temps de traitement de cette page : {page_end - page_start:.2f} secondes")
+            st.write(f"Temps de traitement de la page {i+1} : {page_end - page_start:.2f} secondes")
     
-    # --- Génération du PDF regroupant tous les codes?barres validés ---
-    if all_validated_serials and st.button("Générer PDF de tous les codes?barres"):
-        st.write("Début de la génération du PDF...")
+    if all_validated_serials and st.button("Générer PDF de tous les codes‑barres"):
+        st.write("Génération du PDF...")
         try:
             pdf = FPDF()
             pdf.set_auto_page_break(0, margin=10)
             temp_dir = tempfile.gettempdir()
-            st.write("Dossier temporaire utilisé :", temp_dir)
-            for vsn in all_validated_serials:
-                st.write("Traitement du numéro :", vsn)
-                barcode_buffer = generate_barcode_pybarcode(vsn)
-                file_name = f"barcode_{vsn.replace(' ', '_')}.png"
-                image_path = os.path.join(temp_dir, file_name)
-                with open(image_path, "wb") as f:
-                    f.write(barcode_buffer.getvalue())
-                st.write("Image sauvegardée :", image_path)
+            for seg in all_validated_serials:
+                barcode_buf = generate_barcode_pybarcode(seg)
+                fname = os.path.join(temp_dir, f"barcode_{seg}.png")
+                with open(fname, "wb") as f:
+                    f.write(barcode_buf.getvalue())
                 pdf.add_page()
-                pdf.image(image_path, x=10, y=10, w=pdf.w - 20)
-                st.write("Ajouté au PDF :", vsn)
+                pdf.image(fname, x=10, y=10, w=pdf.w - 20)
             pdf_path = os.path.join(temp_dir, "barcodes.pdf")
             pdf.output(pdf_path, "F")
-            st.write("PDF généré à :", pdf_path)
             with open(pdf_path, "rb") as f:
                 pdf_data = f.read()
-            st.download_button("Télécharger le PDF des codes?barres", data=pdf_data, file_name="barcodes.pdf", mime="application/pdf")
+            st.download_button("Télécharger le PDF", data=pdf_data, file_name="barcodes.pdf", mime="application/pdf")
         except Exception as e:
             st.error("Erreur lors de la génération du PDF : " + str(e))
-    
-    # --- Enregistrement global du feedback ---
-    if st.button("Valider et Enregistrer le Feedback global"):
-        with st.spinner("Enregistrement du feedback..."):
-            combined_text = ""
-            for file in uploaded_files:
-                combined_text += "\n---\n"
-                img = Image.open(file)
-                img = correct_image_orientation(img)
-                img.thumbnail((1500, 1500))
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
-                page_bytes = buf.getvalue()
-                with st.spinner("Extraction OCR..."):
-                    results = ocr_reader.readtext(page_bytes)
-                combined_text += " ".join([res[1] for res in results])
-            def save_feedback():
-                c.execute("INSERT INTO feedback (image, ocr_text, validated_fields) VALUES (?, ?, ?)",
-                          (b"Multiple pages", combined_text, " | ".join(all_validated_serials)))
-                conn.commit()
-            threading.Thread(target=save_feedback).start()
-            st.success("Feedback global enregistré avec succès !")
     
     overall_end = time.time()
     st.write(f"Temps de traitement global : {overall_end - overall_start:.2f} secondes")

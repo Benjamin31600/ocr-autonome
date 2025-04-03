@@ -88,7 +88,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Daher Aerospace – OCR Multi Page & Code-barres")
+st.title("Daher Aerospace – OCR Multi Pages & Code-barres")
 st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (le cadre sera en rouge), vérifiez le texte extrait, séparez les numéros (un par ligne) et confirmez chaque numéro pour générer le code barres correspondant.")
 
 # --- Connexion à la base SQLite ---

@@ -40,7 +40,7 @@ def generate_barcode_pybarcode(sn):
     return buffer
 
 # --- Configuration de la page ---
-st.set_page_config(page_title="Daher – Multi Page OCR & Code?barres", page_icon="??", layout="wide")
+st.set_page_config(page_title="Daher – Multi Page OCR & Code-barres", page_icon="??", layout="wide")
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
@@ -89,7 +89,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("Daher Aerospace – OCR Multi Page & Code?barres")
-st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (le cadre sera en rouge), vérifiez le texte extrait, séparez les numéros (un par ligne) et confirmez chaque numéro pour générer le code?barres correspondant. Vous pourrez ensuite créer un PDF regroupant tous les codes?barres.")
+st.write("Téléversez les pages de votre bordereau. Pour chaque page, sélectionnez la zone d'intérêt (le cadre sera en rouge), vérifiez le texte extrait, séparez les numéros (un par ligne) et confirmez chaque numéro pour générer le code barres correspondant.")
 
 # --- Connexion à la base SQLite ---
 conn = sqlite3.connect("feedback.db", check_same_thread=False)
